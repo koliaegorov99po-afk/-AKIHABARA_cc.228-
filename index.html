@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>$AKIHABARA_cc.228$</title>
+    <style>
+        body { background-color: #0f0f0f; color: #fff; font-family: Arial, sans-serif; text-align: center; margin: 0; padding: 20px; }
+        img { width: 150px; height: 150px; border-radius: 50%; border: 3px solid #ff0055; margin-top: 20px; }
+        h1 { color: #ff0055; }
+        #chat { max-width: 400px; margin: 20px auto; background: #1a1a1a; padding: 15px; border-radius: 10px; border: 1px solid #333; }
+        #messages { height: 200px; overflow-y: scroll; text-align: left; border-bottom: 1px solid #333; margin-bottom: 10px; padding: 5px; font-size: 14px; }
+        input, button { padding: 10px; margin: 5px; border-radius: 5px; border: none; }
+        input { width: 70%; background: #222; color: #fff; }
+        button { background: #ff0055; color: #fff; font-weight: bold; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+    <img src="265.png" alt="Logo">
+    <h1>$AKIHABARA_cc.228$</h1>
+    <p>Добро пожаловать на защищенную платформу.</p>
+
+    <div id="chat">
+        <div id="messages"></div>
+        <input id="username" type="text" placeholder="Ваше имя..." value="Аноним"><br>
+        <input id="input" type="text" placeholder="Введите сообщение...">
+        <button onclick="sendMessage()">Отправить</button>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const messages = document.getElementById('messages');
+        const input = document.getElementById('input');
+        const usernameInput = document.getElementById('username');
+
+        socket.on('load_history', (msgs) => {
+            msgs.forEach(msg => displayMessage(msg));
+        });
+
+        socket.on('chat_message', (msg) => {
+            displayMessage(msg);
+        });
+
+        function sendMessage() {
+            if (input.value.trim() === '') return;
+            socket.emit('chat_message', {
+                username: usernameInput.value || 'Аноним',
+                text: input.value
+            });
+            input.value = '';
+        }
+
+        function displayMessage(msg) {
+            const item = document.createElement('div');
+            item.innerHTML = `<b style="color: #ff0055;">${msg.username}</b> [${msg.time}]: ${msg.text}`;
+            messages.appendChild(item);
+            messages.scrollTop = messages.scrollHeight;
+        }
+    </script>
+</body>
+</html>
