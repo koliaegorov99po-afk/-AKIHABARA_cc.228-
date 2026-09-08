@@ -35,7 +35,18 @@ app.post('/login', (req, res) => {
     const username = req.body.username ? req.body.username.trim().replace('@', '') : '';
     if (!username) return res.redirect('/');
     req.session.username = username;
-    db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl) VALUES (?, 'user', ?)", [username, MAIN_IMAGE], () => {
+    
+    // Проверяем, если это админ, сразу прописываем статус admin в базе
+    const role = (username.toLowerCase() === 'koliaegorov99po-afk') ? 'admin' : 'user';
+
+    db.run("INSERT INTO users (username, status, avatarUrl) VALUES (?, ?, ?) ON CONFLICT(username) DO UPDATE SET status=?", 
+        [username, role, MAIN_IMAGE, role], () => {
+        res.redirect('/');
+    });
+});
+
+app.get('/logout', (req, res) => {
+    req.session.destroy(() => {
         res.redirect('/');
     });
 });
@@ -217,10 +228,11 @@ app.get('/', (req, res) => {
                         <img src="${MAIN_IMAGE}" style="width: 70px; height: 70px; border-radius: 50%; border: 2px solid #00eaff; object-fit: cover; margin-bottom: 10px;">
                         <h3 id="user-name" style="color: #00eaff;">Загрузка...</h3>
                         <p id="user-role" style="color: #ff0055; font-size: 0.8em; margin-top: 5px;">СТАТУС</p>
-                        <div style="margin-top: 20px; background: #000; padding: 10px; border-radius: 6px; border: 1px solid #00eaff;">
+                        <div style="margin-top: 15px; background: #000; padding: 10px; border-radius: 6px; border: 1px solid #00eaff;">
                             <p style="font-size: 0.75em; color: #00eaff; margin-bottom: 5px;">Ваша реферальная ссылка:</p>
                             <span id="ref-link" style="font-size: 0.7em; color: #aaa; word-break: break-all;">Загрузка...</span>
                         </div>
+                        <a href="/logout" style="display: block; margin-top: 15px; padding: 10px; background: #ff0055; color: #fff; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 0.9em; text-align: center;">Выйти из аккаунта</a>
                     </div>
                 </div>
             </div>
@@ -235,7 +247,7 @@ app.get('/', (req, res) => {
                     if (res.ok) {
                         currentUser = await res.json();
                         document.getElementById('user-name').innerText = '@' + currentUser.username;
-                        document.getElementById('user-role').innerText = currentUser.status;
+                        document.getElementById('user-role').innerText = currentUser.status.toUpperCase();
                         document.getElementById('ref-link').innerText = window.location.origin + '?ref=' + currentUser.username;
                     }
                 }
