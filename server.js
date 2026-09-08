@@ -26,11 +26,13 @@ app.use(session({
 
 db.serialize(() => {
     db.run("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, status TEXT, avatarUrl TEXT, referralCode TEXT, invitedBy TEXT, invites INTEGER DEFAULT 0)");
-    db.run("CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, avatarUrl TEXT, text TEXT, mediaUrl TEXT, mediaType TEXT, isAd INTEGER DEFAULT 0, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)");
+    db.run("CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, avatarUrl TEXT, text TEXT, mediaUrl TEXT, mediaType TEXT, isAd INTEGER DEFAULT 0, isPinned INTEGER DEFAULT 0, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)");
     db.run("CREATE TABLE IF NOT EXISTS exchangers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, photoUrl TEXT, telegramUrl TEXT, description TEXT, owner TEXT, can_post INTEGER DEFAULT 0, can_ads INTEGER DEFAULT 0)");
     db.run("CREATE TABLE IF NOT EXISTS shops (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, photoUrl TEXT, telegramUrl TEXT, description TEXT, owner TEXT, can_post INTEGER DEFAULT 0, can_ads INTEGER DEFAULT 0)");
     db.run("CREATE TABLE IF NOT EXISTS complaints (id INTEGER PRIMARY KEY AUTOINCREMENT, target_type TEXT, target_name TEXT, complainant TEXT, reason TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)");
+    db.run("CREATE TABLE IF NOT EXISTS settings (key TEXT UNIQUE, value TEXT)");
     db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl) VALUES ('koliaegorov99po-afk', 'admin', ?)", [MAIN_IMAGE]);
+    db.run("INSERT OR IGNORE INTO settings (key, value) VALUES ('tg_chat_link', 'https://t.me/+K9gPO5PUyttlN2Zi')");
 });
 
 app.post('/login', (req, res) => {
@@ -85,7 +87,24 @@ app.get('/api/user', (req, res) => {
 
 app.get('/api/stats', (req, res) => {
     db.get("SELECT COUNT(*) as count FROM users", (err, row) => {
-        res.json({ totalUsers: row ? row.count : 0 });
+        db.get("SELECT value FROM settings WHERE key = 'tg_chat_link'", (err2, settingRow) => {
+            res.json({ totalUsers: row ? row.count : 0, tgChatLink: settingRow ? settingRow.value : 'https://t.me/+K9gPO5PUyttlN2Zi' });
+        });
+    });
+});
+
+app.post('/api/admin/update-chat-link', (req, res) => {
+    if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
+    db.get("SELECT status, username FROM users WHERE username = ?", [req.session.username], (err, user) => {
+        if (!user || user.status !== 'admin' || user.username.toLowerCase() !== 'koliaegorov99po-afk') {
+            return res.status(403).json({ error: 'Only main admin can update chat link' });
+        }
+        const { tgChatLink } = req.body;
+        db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('tg_chat_link', ?)", [tgChatLink], (err) => {
+            if (err) return res.status(500).json({ error: err.message });
+            io.emit('chat_link_updated', { tgChatLink });
+            res.json({ success: true });
+        });
     });
 });
 
@@ -110,7 +129,13 @@ app.get('/api/admin/data', (req, res) => {
         
         db.all("SELECT username, status, invitedBy, invites FROM users", (err, users) => {
             db.all("SELECT * FROM complaints ORDER BY timestamp DESC", (err, complaints) => {
-                res.json({ users, complaints, currentAdmin: user.username });
+                db.all("SELECT * FROM exchangers", (err, exchangers) => {
+                    db.all("SELECT * FROM shops", (err, shops) => {
+                        db.get("SELECT value FROM settings WHERE key = 'tg_chat_link'", (err2, settingRow) => {
+                            res.json({ users, complaints, exchangers, shops, currentAdmin: user.username, tgChatLink: settingRow ? settingRow.value : '' });
+                        });
+                    });
+                });
             });
         });
     });
@@ -124,6 +149,22 @@ app.post('/api/admin/set-status', (req, res) => {
         }
         const { targetUser, newStatus } = req.body;
         db.run("UPDATE users SET status = ? WHERE username = ?", [newStatus, targetUser], (err) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ success: true });
+        });
+    });
+});
+
+app.post('/api/admin/delete-user', (req, res) => {
+    if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
+    db.get("SELECT status, username FROM users WHERE username = ?", [req.session.username], (err, user) => {
+        if (!user || user.status !== 'admin' || user.username.toLowerCase() !== 'koliaegorov99po-afk') {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+        const { targetUser } = req.body;
+        if (targetUser.toLowerCase() === 'koliaegorov99po-afk') return res.status(400).json({ error: 'Cannot delete main admin' });
+        
+        db.run("DELETE FROM users WHERE username = ?", [targetUser], (err) => {
             if (err) return res.status(500).json({ error: err.message });
             res.json({ success: true });
         });
@@ -154,6 +195,32 @@ app.post('/api/admin/add-exchanger', (req, res) => {
     });
 });
 
+app.post('/api/admin/edit-exchanger', (req, res) => {
+    if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
+    db.get("SELECT status FROM users WHERE username = ?", [req.session.username], (err, user) => {
+        if (!user || user.status !== 'admin') return res.status(403).json({ error: 'Access denied' });
+        
+        const { id, name, photoUrl, telegramUrl, description, owner, can_post, can_ads } = req.body;
+        db.run("UPDATE exchangers SET name = ?, photoUrl = ?, telegramUrl = ?, description = ?, owner = ?, can_post = ?, can_ads = ? WHERE id = ?",
+            [name, photoUrl || MAIN_IMAGE, telegramUrl, description, owner, can_post ? 1 : 0, can_ads ? 1 : 0, id], (err) => {
+                if (err) return res.status(500).json({ error: err.message });
+                res.json({ success: true });
+            });
+    });
+});
+
+app.post('/api/admin/delete-exchanger', (req, res) => {
+    if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
+    db.get("SELECT status FROM users WHERE username = ?", [req.session.username], (err, user) => {
+        if (!user || user.status !== 'admin') return res.status(403).json({ error: 'Access denied' });
+        const { id } = req.body;
+        db.run("DELETE FROM exchangers WHERE id = ?", [id], (err) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ success: true });
+        });
+    });
+});
+
 app.post('/api/admin/add-shop', (req, res) => {
     if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
     db.get("SELECT status FROM users WHERE username = ?", [req.session.username], (err, user) => {
@@ -165,6 +232,40 @@ app.post('/api/admin/add-shop', (req, res) => {
                 if (err) return res.status(500).json({ error: err.message });
                 res.json({ success: true });
             });
+    });
+});
+
+app.post('/api/admin/edit-shop', (req, res) => {
+    if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
+    db.get("SELECT status FROM users WHERE username = ?", [req.session.username], (err, user) => {
+        if (!user || user.status !== 'admin') return res.status(403).json({ error: 'Access denied' });
+        
+        const { id, name, photoUrl, telegramUrl, description, owner, can_post, can_ads } = req.body;
+        db.run("UPDATE shops SET name = ?, photoUrl = ?, telegramUrl = ?, description = ?, owner = ?, can_post = ?, can_ads = ? WHERE id = ?",
+            [name, photoUrl || MAIN_IMAGE, telegramUrl, description, owner, can_post ? 1 : 0, can_ads ? 1 : 0, id], (err) => {
+                if (err) return res.status(500).json({ error: err.message });
+                res.json({ success: true });
+            });
+    });
+});
+
+app.post('/api/admin/delete-shop', (req, res) => {
+    if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
+    db.get("SELECT status FROM users WHERE username = ?", [req.session.username], (err, user) => {
+        if (!user || user.status !== 'admin') return res.status(403).json({ error: 'Access denied' });
+        const { id } = req.body;
+        db.run("DELETE FROM shops WHERE id = ?", [id], (err) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ success: true });
+        });
+    });
+});
+
+app.get('/api/referrals', (req, res) => {
+    if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
+    db.all("SELECT username, status, timestamp FROM users WHERE invitedBy = ?", [req.session.username], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(rows);
     });
 });
 
@@ -228,8 +329,13 @@ app.get('/', (req, res) => {
 
                 .top-counter-bar {
                     display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.6);
-                    padding: 8px 14px; border-radius: 8px; border: 1px solid #333; margin-bottom: 10px; font-size: 0.9em; color: #00eaff;
+                    padding: 8px 14px; border-radius: 8px; border: 1px solid #333; margin-bottom: 10px; font-size: 0.9em; color: #00eaff; flex-wrap: wrap; gap: 5px;
                 }
+
+                .tg-chat-btn-link {
+                    background: #0088cc; color: #fff; text-decoration: none; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 0.85em; display: inline-flex; align-items: center; gap: 5px; transition: 0.3s;
+                }
+                .tg-chat-btn-link:hover { background: #00aaff; box-shadow: 0 0 8px #0088cc; }
 
                 .menu-tabs {
                     display: flex; gap: 8px; margin-bottom: 12px; background: rgba(0,0,0,0.6);
@@ -252,7 +358,8 @@ app.get('/', (req, res) => {
                     text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid #333; padding-bottom: 6px;
                 }
 
-                /* ПРОСТОРНЫЙ ЧАТ */
+                #pinned-banner { background: rgba(0,234,255,0.15); border: 1px solid #00eaff; padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; font-size: 0.85em; display: none; justify-content: space-between; align-items: center; }
+
                 #messages-box { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 10px; }
                 .msg-card { display: flex; gap: 12px; max-width: 85%; background: rgba(22,22,22,0.9); padding: 10px 14px; border-radius: 10px; border: 1px solid #333; position: relative; }
                 .msg-card.own { align-self: flex-end; background: rgba(255, 0, 85, 0.12); border-color: #ff0055; flex-direction: row-reverse; }
@@ -264,12 +371,13 @@ app.get('/', (req, res) => {
                 .msg-text { font-size: 0.95em; word-break: break-word; line-height: 1.4; }
                 .msg-time { font-size: 0.65em; color: #777; margin-left: 6px; }
                 .media-preview { margin-top: 8px; max-width: 100%; max-height: 250px; border-radius: 6px; object-fit: cover; display: block; }
+                .msg-actions { margin-top: 5px; display: flex; gap: 6px; font-size: 0.75em; }
+                .msg-action-btn { background: #222; border: 1px solid #444; color: #00eaff; padding: 2px 6px; border-radius: 4px; cursor: pointer; }
 
                 .chat-input-box { display: flex; gap: 8px; padding-top: 10px; border-top: 1px solid #333; position: relative; align-items: center; }
                 .chat-input { flex: 1; background: #000; border: 1px solid #444; padding: 12px; border-radius: 8px; color: #fff; outline: none; font-size: 0.95em; min-width: 0; }
                 .action-icon-btn { background: #222; border: 1px solid #444; color: #00eaff; padding: 10px 14px; border-radius: 8px; cursor: pointer; font-size: 1.1em; }
                 
-                /* ПАНЕЛЬ ЭМОДЗИ И ГИФОК */
                 #emoji-picker { display: none; position: absolute; bottom: 70px; left: 0; width: 320px; background: #111; border: 2px solid #ff0055; border-radius: 10px; padding: 10px; z-index: 10; box-shadow: 0 0 20px rgba(0,0,0,0.9); }
                 #emoji-picker.open { display: block; }
                 .picker-tabs { display: flex; gap: 5px; margin-bottom: 8px; border-bottom: 1px solid #333; padding-bottom: 5px; }
@@ -293,6 +401,7 @@ app.get('/', (req, res) => {
                 .admin-panel input, .admin-panel textarea, .admin-panel select { width: 100%; padding: 8px; margin-bottom: 10px; background: #000; border: 1px solid #444; color: #fff; border-radius: 4px; font-size: 0.85em; }
                 .admin-panel label { font-size: 0.8em; color: #00eaff; display: block; margin-bottom: 5px; }
                 .admin-btn { background: #00eaff; color: #000; border: none; padding: 8px 15px; font-weight: bold; border-radius: 4px; cursor: pointer; width: 100%; margin-top: 5px; }
+                .admin-btn-danger { background: #ff3333; color: #fff; margin-top: 5px; }
             </style>
         </head>
         <body>
@@ -300,6 +409,11 @@ app.get('/', (req, res) => {
                 <div class="top-counter-bar">
                     <span>👑 Главный админ: <b style="color:#ff0055;">@koliaegorov99po-afk</b></span>
                     <span>👥 Участников: <b id="total-users-count">...</b></span>
+                    <div>
+                        <a id="top-tg-chat-btn" href="https://t.me/+K9gPO5PUyttlN2Zi" target="_blank" class="tg-chat-btn-link">
+                            <i class="fa-brands fa-telegram"></i> Чат Telegram
+                        </a>
+                    </div>
                 </div>
 
                 <div class="menu-tabs">
@@ -311,10 +425,14 @@ app.get('/', (req, res) => {
 
                 <div id="chat" class="section-content active">
                     <div class="list-box-title">Киберпанк Чат (Общение & Реклама)</div>
+                    <div id="pinned-banner">
+                        <div>📌 <b>Закреп:</b> <span id="pinned-text-content">...</span></div>
+                        <button class="admin-action-btn" id="unpin-btn-top" onclick="unpinCurrentMessage()" style="background:#ff0055;color:#fff;border:none;padding:3px 6px;border-radius:4px;cursor:pointer;display:none;font-size:0.75em;">Открепить</button>
+                    </div>
                     <div id="messages-box"></div>
                     <div class="chat-input-box">
                         <button class="action-icon-btn" onclick="toggleEmojiPicker()"><i class="fa-regular fa-face-smile"></i></button>
-                        <input type="text" id="msg-input" class="chat-input" placeholder="Введите сообщение... (только админы могут слать рекламу)" autocomplete="off">
+                        <input type="text" id="msg-input" class="chat-input" placeholder="Введите сообщение..." autocomplete="off">
                         <button class="action-icon-btn" onclick="sendMessage()"><i class="fa-solid fa-paper-plane"></i></button>
                         
                         <div id="emoji-picker">
@@ -353,29 +471,36 @@ app.get('/', (req, res) => {
                         <img src="${MAIN_IMAGE}" style="width: 75px; height: 75px; border-radius: 50%; border: 2px solid #00eaff; object-fit: cover; margin-bottom: 10px;">
                         <h3 id="user-name" style="color: #00eaff;">Загрузка...</h3>
                         <p id="user-role" style="color: #ff0055; font-size: 0.8em; margin-top: 5px;">СТАТУС</p>
+                        
                         <div style="margin-top: 15px; background: #000; padding: 10px; border-radius: 6px; border: 1px solid #00eaff;">
                             <p style="font-size: 0.75em; color: #00eaff; margin-bottom: 5px;">Ваша реферальная ссылка:</p>
                             <span id="ref-link" style="font-size: 0.7em; color: #aaa; word-break: break-all;">Загрузка...</span>
+                            <button class="admin-btn" style="margin-top: 8px; font-size: 0.8em; padding: 6px;" onclick="copyRefLink()">Скопировать ссылку</button>
+                        </div>
+
+                        <div style="margin-top: 15px; background: #000; padding: 10px; border-radius: 6px; border: 1px solid #333; text-align: left;">
+                            <h5 style="color: #00eaff; font-size: 0.85em; margin-bottom: 8px;"><i class="fa-solid fa-users"></i> Приглашенные вами рефералы:</h5>
+                            <div id="my-referrals-list" style="font-size: 0.75em; color: #ccc; max-height: 100px; overflow-y: auto;">Загрузка...</div>
                         </div>
                         
-                        <!-- ПАНЕЛЬ АДМИНА -->
                         <div id="admin-section" class="admin-panel">
                             <h4 style="color: #ff0055; margin-bottom: 10px; text-align:center;">Панель Администратора</h4>
                             
-                            <!-- ВЫДАЧА АДМИНКИ -->
+                            <div id="main-admin-chat-link-box" style="background: #000; padding: 10px; border-radius: 6px; margin-bottom: 15px; display:none;">
+                                <h5 style="color: #00eaff; margin-bottom: 5px; font-size:0.85em;">Ссылка на Telegram-чат в меню:</h5>
+                                <input type="text" id="admin-tg-chat-input" placeholder="https://t.me/...">
+                                <button class="admin-btn" onclick="updateChatLink()">Изменить ссылку на чат</button>
+                            </div>
+
                             <div id="main-admin-controls" style="background: #000; padding: 10px; border-radius: 6px; margin-bottom: 15px; display:none;">
-                                <h5 style="color: #00eaff; margin-bottom: 5px; font-size:0.85em;">Управление правами пользователей:</h5>
+                                <h5 style="color: #00eaff; margin-bottom: 5px; font-size:0.85em;">Управление пользователями:</h5>
                                 <select id="target-user-select"></select>
-                                <select id="new-status-select">
+                                <select id="new-status-select" style="margin-top:5px;">
                                     <option value="admin">Сделать администратором</option>
                                     <option value="user">Убрать админку (обычный юзер)</option>
                                 </select>
-                                <button class="admin-btn" onclick="changeUserStatus()">Применить статус</button>
-                            </div>
-
-                            <div style="background: #000; padding: 10px; border-radius: 6px; margin-bottom: 15px; max-height: 140px; overflow-y: auto;">
-                                <h5 style="color: #00eaff; margin-bottom: 5px; font-size:0.85em;">Рефералы пользователей:</h5>
-                                <div id="admin-referrals-list" style="font-size: 0.75em; color: #ccc;">Загрузка...</div>
+                                <button class="admin-btn" onclick="changeUserStatus()">Изменить статус</button>
+                                <button class="admin-btn admin-btn-danger" onclick="deleteUserAccount()">Удалить пользователя</button>
                             </div>
 
                             <div style="background: #000; padding: 10px; border-radius: 6px; margin-bottom: 15px; max-height: 140px; overflow-y: auto;">
@@ -383,7 +508,8 @@ app.get('/', (req, res) => {
                                 <div id="admin-complaints-list" style="font-size: 0.75em; color: #ccc;">Нет жалоб</div>
                             </div>
 
-                            <p style="color: #00eaff; font-size: 0.85em; margin-bottom: 5px;">Добавить обменник</p>
+                            <p style="color: #00eaff; font-size: 0.85em; margin-bottom: 5px;">Добавить / Заменить обменник</p>
+                            <input type="hidden" id="edit-ex-id" value="">
                             <input type="text" id="ex-name" placeholder="Название обменника">
                             <input type="text" id="ex-url" placeholder="Ссылка на Telegram">
                             <input type="text" id="ex-owner" placeholder="Ник владельца (@username)">
@@ -392,10 +518,12 @@ app.get('/', (req, res) => {
                                 <label><input type="checkbox" id="ex-post"> Разрешить посты</label>
                                 <label><input type="checkbox" id="ex-ads"> Разрешить рекламу</label>
                             </div>
-                            <button class="admin-btn" onclick="addExchanger()">Добавить обменник</button>
+                            <button class="admin-btn" id="ex-submit-btn" onclick="saveExchanger()">Добавить обменник</button>
+                            <button class="admin-btn" id="ex-cancel-btn" style="background:#555;color:#fff;display:none;margin-top:5px;" onclick="resetExchangerForm()">Отмена редактирования</button>
 
                             <hr style="border-color: #444; margin: 15px 0 10px 0;">
-                            <p style="color: #00eaff; font-size: 0.85em; margin-bottom: 5px;">Добавить магазин</p>
+                            <p style="color: #00eaff; font-size: 0.85em; margin-bottom: 5px;">Добавить / Заменить магазин</p>
+                            <input type="hidden" id="edit-shop-id" value="">
                             <input type="text" id="shop-name" placeholder="Название магазина">
                             <input type="text" id="shop-url" placeholder="Ссылка на Telegram">
                             <input type="text" id="shop-owner" placeholder="Ник владельца (@username)">
@@ -404,7 +532,8 @@ app.get('/', (req, res) => {
                                 <label><input type="checkbox" id="shop-post"> Разрешить посты</label>
                                 <label><input type="checkbox" id="shop-ads"> Разрешить рекламу</label>
                             </div>
-                            <button class="admin-btn" onclick="addShop()">Добавить магазин</button>
+                            <button class="admin-btn" id="shop-submit-btn" onclick="saveShop()">Добавить магазин</button>
+                            <button class="admin-btn" id="shop-cancel-btn" style="background:#555;color:#fff;display:none;margin-top:5px;" onclick="resetShopForm()">Отмена редактирования</button>
                         </div>
 
                         <a href="/logout" style="display: block; margin-top: 15px; padding: 10px; background: #ff0055; color: #fff; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 0.9em; text-align: center;">Выйти из аккаунта</a>
@@ -416,11 +545,16 @@ app.get('/', (req, res) => {
             <script>
                 const socket = io();
                 let currentUser = null;
+                let exchangersData = [];
+                let shopsData = [];
 
                 async function loadStats() {
                     const res = await fetch('/api/stats');
                     const data = await res.json();
                     document.getElementById('total-users-count').innerText = data.totalUsers;
+                    if(data.tgChatLink) {
+                        document.getElementById('top-tg-chat-btn').href = data.tgChatLink;
+                    }
                 }
                 loadStats();
 
@@ -436,31 +570,53 @@ app.get('/', (req, res) => {
                             document.getElementById('admin-section').style.display = 'block';
                             loadAdminData();
                         }
+                        loadMyReferrals();
                     }
                 }
                 loadUserData();
+
+                async function loadMyReferrals() {
+                    const res = await fetch('/api/referrals');
+                    if(res.ok) {
+                        const refs = await res.json();
+                        const container = document.getElementById('my-referrals-list');
+                        container.innerHTML = '';
+                        if(refs.length === 0) {
+                            container.innerHTML = 'У вас пока нет приглашенных рефералов';
+                        } else {
+                            refs.forEach(r => {
+                                container.innerHTML += `<div>👤 @${r.username} (<span style="color:#00eaff;">${r.status}</span>)</div>`;
+                            });
+                        }
+                    }
+                }
+
+                function copyRefLink() {
+                    const linkText = document.getElementById('ref-link').innerText;
+                    navigator.clipboard.writeText(linkText);
+                    alert('Реферальная ссылка скопирована в буфер обмена!');
+                }
 
                 async function loadAdminData() {
                     const res = await fetch('/api/admin/data');
                     if(res.ok) {
                         const data = await res.json();
+                        exchangersData = data.exchangers;
+                        shopsData = data.shops;
                         
                         if(data.currentAdmin.toLowerCase() === 'koliaegorov99po-afk') {
                             document.getElementById('main-admin-controls').style.display = 'block';
+                            document.getElementById('main-admin-chat-link-box').style.display = 'block';
+                            document.getElementById('admin-tg-chat-input').value = data.tgChatLink || '';
+
                             const select = document.getElementById('target-user-select');
                             select.innerHTML = '';
                             data.users.forEach(u => {
                                 if(u.username.toLowerCase() !== 'koliaegorov99po-afk') {
-                                    select.innerHTML += \`<option value="\${u.username}">@\${u.username} (\${u.status})</option>\`;
+                                    select.innerHTML += `<option value="${u.username}">@${u.username} (${u.status})</option>`;
                                 }
                             });
                         }
-
-                        const refContainer = document.getElementById('admin-referrals-list');
-                        refContainer.innerHTML = '';
-                        data.users.forEach(u => {
-                            refContainer.innerHTML += \`<div><b>@\${u.username}</b> [\${u.status}] (Пригласил: @\${u.invitedBy || 'никто'}, рефералов: \${u.invites})</div>\`;
-                        });
 
                         const compContainer = document.getElementById('admin-complaints-list');
                         compContainer.innerHTML = '';
@@ -468,9 +624,25 @@ app.get('/', (req, res) => {
                             compContainer.innerHTML = 'Нет жалоб';
                         } else {
                             data.complaints.forEach(c => {
-                                compContainer.innerHTML += \`<div style="border-bottom:1px solid #333; margin-bottom:5px; padding-bottom:3px;"><b>[\${c.target_type}] \${c.target_name}</b> от @\${c.complainant}: <span style="color:#ff0055;">\${c.reason}</span></div>\`;
+                                compContainer.innerHTML += `<div style="border-bottom:1px solid #333; margin-bottom:5px; padding-bottom:3px;"><b>[${c.target_type}] ${c.target_name}</b> от @${c.complainant}: <span style="color:#ff0055;">${c.reason}</span></div>`;
                             });
                         }
+                    }
+                }
+
+                async function updateChatLink() {
+                    const tgChatLink = document.getElementById('admin-tg-chat-input').value.trim();
+                    if(!tgChatLink) return alert('Введите корректную ссылку');
+                    const res = await fetch('/api/admin/update-chat-link', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tgChatLink })
+                    });
+                    if(res.ok) {
+                        alert('Ссылка на Telegram-чат успешно обновлена!');
+                        document.getElementById('top-tg-chat-btn').href = tgChatLink;
+                    } else {
+                        alert('Ошибка обновления ссылки');
                     }
                 }
 
@@ -487,6 +659,22 @@ app.get('/', (req, res) => {
                         loadAdminData();
                     } else {
                         alert('Ошибка изменения статуса');
+                    }
+                }
+
+                async function deleteUserAccount() {
+                    const targetUser = document.getElementById('target-user-select').value;
+                    if(!confirm(`Вы действительно хотите удалить пользователя @${targetUser}?`)) return;
+                    const res = await fetch('/api/admin/delete-user', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ targetUser })
+                    });
+                    if(res.ok) {
+                        alert('Пользователь успешно удален!');
+                        loadAdminData();
+                    } else {
+                        alert('Ошибка удаления');
                     }
                 }
 
@@ -531,12 +719,12 @@ app.get('/', (req, res) => {
                 }
 
                 async function sendAdPost(type, name) {
-                    const text = prompt(\`Введите рекламный текст от \${type} "\${name}":\`);
+                    const text = prompt(`Введите рекламный текст от ${type} "${name}":`);
                     if(!text) return;
-                    const mediaUrl = prompt('Укажите ссылку на картинку или видео для поста (заставка/медиа):', '');
+                    const mediaUrl = prompt('Укажите ссылку на картинку или видео для заставки поста:', '');
                     const mediaType = mediaUrl && mediaUrl.includes('.mp4') ? 'video' : 'image';
                     
-                    socket.emit('chat_message', { text: \`📢 РЕКЛАМА [\${type}]: \${name}\\n\\n\${text}\`, mediaUrl, mediaType, isAd: true });
+                    socket.emit('chat_message', { text: `📢 РЕКЛАМА [${type}]: ${name}\n\n${text}`, mediaUrl, mediaType, isAd: true });
                     alert('Рекламный пост успешно опубликован в чате!');
                 }
 
@@ -549,38 +737,73 @@ app.get('/', (req, res) => {
                     const isSystem = msg.isSystem;
                     const isOwn = currentUser && msg.username === currentUser.username;
                     const div = document.createElement('div');
+                    div.id = 'msg-' + msg.id;
                     
                     if (isSystem) {
                         div.className = 'msg-card system';
-                        div.innerHTML = \`<div class="msg-text">\${msg.text}</div>\`;
+                        div.innerHTML = `<div class="msg-text">${msg.text}</div>`;
                     } else {
                         div.className = 'msg-card' + (isOwn ? ' own' : '') + (msg.isAd ? ' ad-post' : '');
                         let mediaHtml = '';
                         if (msg.mediaUrl) {
                             if (msg.mediaType === 'video') {
-                                mediaHtml = \`<video src="\${msg.mediaUrl}" controls class="media-preview"></video>\`;
+                                mediaHtml = `<video src="${msg.mediaUrl}" controls class="media-preview"></video>`;
                             } else {
-                                mediaHtml = \`<img src="\${msg.mediaUrl}" alt="media" class="media-preview">\`;
+                                mediaHtml = `<img src="${msg.mediaUrl}" alt="media" class="media-preview">`;
                             }
                         }
-                        div.innerHTML = \`
-                            <img src="\${msg.avatarUrl || '${MAIN_IMAGE}'}" alt="av" class="avatar">
+
+                        let actionsHtml = '';
+                        if (currentUser && (currentUser.status === 'admin' || isOwn)) {
+                            actionsHtml += `<button class="msg-action-btn" onclick="editMessage(${msg.id})">Изменить</button>`;
+                        }
+                        if (currentUser && currentUser.status === 'admin') {
+                            const pinLabel = msg.isPinned ? 'Открепить' : 'Закрепить';
+                            actionsHtml += `<button class="msg-action-btn" onclick="togglePinMessage(${msg.id})">${pinLabel}</button>`;
+                        }
+
+                        div.innerHTML = `
+                            <img src="${msg.avatarUrl || '${MAIN_IMAGE}'}" alt="av" class="avatar">
                             <div class="msg-content">
                                 <div class="msg-info">
-                                    <span>@\${msg.username} \${msg.isAd ? '<b style="color:#ff0055;">[РЕКЛАМА]</b>' : ''}</span>
-                                    <span class="msg-time">\${new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                                    <span>@${msg.username} ${msg.isAd ? '<b style="color:#ff0055;">[РЕКЛАМА]</b>' : ''}</span>
+                                    <span class="msg-time">${new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
                                 </div>
-                                <div class="msg-text" style="white-space: pre-wrap;">\${msg.text}</div>
-                                \${mediaHtml}
+                                <div class="msg-text" id="msg-text-${msg.id}" style="white-space: pre-wrap;">${msg.text}</div>
+                                ${mediaHtml}
+                                <div class="msg-actions">${actionsHtml}</div>
                             </div>
-                        \`;
+                        `;
+
+                        if (msg.isPinned) {
+                            document.getElementById('pinned-banner').style.display = 'flex';
+                            document.getElementById('pinned-text-content').innerText = msg.text;
+                            if(currentUser && currentUser.status === 'admin') {
+                                document.getElementById('unpin-btn-top').style.display = 'inline-block';
+                            }
+                        }
                     }
                     box.appendChild(div);
                     box.scrollTop = box.scrollHeight;
                 }
 
+                function editMessage(id) {
+                    const textEl = document.getElementById('msg-text-' + id);
+                    const newText = prompt('Измените текст сообщения:', textEl.innerText);
+                    if(newText === null) return;
+                    socket.emit('edit_message', { id, text: newText });
+                }
+
+                function togglePinMessage(id) {
+                    socket.emit('pin_message', { id });
+                }
+
+                function unpinCurrentMessage() {
+                    socket.emit('unpin_message');
+                }
+
                 async function sendComplaint(type, name) {
-                    const reason = prompt(\`Укажите причину жалобы на \${type} "\${name}":\`);
+                    const reason = prompt(`Укажите причину жалобы на ${type} "${name}":`);
                     if(!reason) return;
                     const res = await fetch('/api/complaint', {
                         method: 'POST',
@@ -593,6 +816,7 @@ app.get('/', (req, res) => {
                 async function loadExchangers() {
                     const res = await fetch('/api/exchangers');
                     const list = await res.json();
+                    exchangersData = list;
                     const container = document.getElementById('exchangers-list');
                     container.innerHTML = '';
                     if(list.length === 0) {
@@ -606,32 +830,110 @@ app.get('/', (req, res) => {
 
                         let adBtn = '';
                         if(currentUser && (currentUser.status === 'admin' || (ex.can_ads && currentUser.username === ex.owner))) {
-                            adBtn = \`<button class="ad-post-btn" onclick="sendAdPost('Обменник', '\${ex.name}')">Реклама</button>\`;
+                            adBtn = `<button class="ad-post-btn" onclick="sendAdPost('Обменник', '${ex.name}')">Реклама</button>`;
                         }
 
-                        container.innerHTML += \`
+                        let adminTools = '';
+                        if(currentUser && currentUser.status === 'admin') {
+                            adminTools = `
+                                <button class="msg-action-btn" onclick="startEditExchanger(${ex.id})">Заменить/Ред</button>
+                                <button class="msg-action-btn" style="background:#ff3333;color:#fff;border:none;" onclick="deleteExchanger(${ex.id})">Удалить</button>
+                            `;
+                        }
+
+                        container.innerHTML += `
                             <div class="ex-card">
                                 <div class="ex-info">
-                                    <img src="\${ex.photoUrl || '${MAIN_IMAGE}'}" alt="ex">
+                                    <img src="${ex.photoUrl || '${MAIN_IMAGE}'}" alt="ex">
                                     <div>
-                                        <h4 style="color: #00eaff; font-size: 0.95em;">\${ex.name} <span style="font-size:0.7em;color:#aaa;">(@\${ex.owner || 'админ'})</span></h4>
-                                        <p style="font-size: 0.75em; color: #aaa; margin: 2px 0;">\${ex.description}</p>
-                                        <div>\${badges}</div>
+                                        <h4 style="color: #00eaff; font-size: 0.95em;">${ex.name} <span style="font-size:0.7em;color:#aaa;">(@${ex.owner || 'админ'})</span></h4>
+                                        <p style="font-size: 0.75em; color: #aaa; margin: 2px 0;">${ex.description}</p>
+                                        <div>${badges}</div>
+                                        <div style="margin-top:4px;">${adminTools}</div>
                                     </div>
                                 </div>
                                 <div class="btn-group">
-                                    \${adBtn}
-                                    <button class="complaint-btn" onclick="sendComplaint('Обменник', '\${ex.name}')">Жалоба</button>
-                                    <a href="\${ex.telegramUrl}" target="_blank" class="ex-tg-btn">Перейти</a>
+                                    ${adBtn}
+                                    <button class="complaint-btn" onclick="sendComplaint('Обменник', '${ex.name}')">Жалоба</button>
+                                    <a href="${ex.telegramUrl}" target="_blank" class="ex-tg-btn">Перейти</a>
                                 </div>
                             </div>
-                        \`;
+                        `;
                     });
+                }
+
+                function startEditExchanger(id) {
+                    const ex = exchangersData.find(e => e.id === id);
+                    if(!ex) return;
+                    document.getElementById('edit-ex-id').value = ex.id;
+                    document.getElementById('ex-name').value = ex.name;
+                    document.getElementById('ex-url').value = ex.telegramUrl;
+                    document.getElementById('ex-owner').value = ex.owner || '';
+                    document.getElementById('ex-desc').value = ex.description;
+                    document.getElementById('ex-post').checked = ex.can_post === 1;
+                    document.getElementById('ex-ads').checked = ex.can_ads === 1;
+                    
+                    document.getElementById('ex-submit-btn').innerText = 'Сохранить изменения (Заменить)';
+                    document.getElementById('ex-cancel-btn').style.display = 'block';
+                    document.getElementById('admin-section').scrollIntoView({ behavior: 'smooth' });
+                }
+
+                function resetExchangerForm() {
+                    document.getElementById('edit-ex-id').value = '';
+                    document.getElementById('ex-name').value = '';
+                    document.getElementById('ex-url').value = '';
+                    document.getElementById('ex-owner').value = '';
+                    document.getElementById('ex-desc').value = '';
+                    document.getElementById('ex-post').checked = false;
+                    document.getElementById('ex-ads').checked = false;
+                    document.getElementById('ex-submit-btn').innerText = 'Добавить обменник';
+                    document.getElementById('ex-cancel-btn').style.display = 'none';
+                }
+
+                async function saveExchanger() {
+                    const id = document.getElementById('edit-ex-id').value;
+                    const data = {
+                        id,
+                        name: document.getElementById('ex-name').value,
+                        telegramUrl: document.getElementById('ex-url').value,
+                        owner: document.getElementById('ex-owner').value.replace('@',''),
+                        description: document.getElementById('ex-desc').value,
+                        can_post: document.getElementById('ex-post').checked,
+                        can_ads: document.getElementById('ex-ads').checked
+                    };
+                    const url = id ? '/api/admin/edit-exchanger' : '/api/admin/add-exchanger';
+                    const res = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(data)
+                    });
+                    if(res.ok) {
+                        alert(id ? 'Обменник успешно заменен/обновлен!' : 'Обменник успешно добавлен!');
+                        resetExchangerForm();
+                        loadExchangers();
+                        loadAdminData();
+                    } else {
+                        alert('Ошибка сохранения');
+                    }
+                }
+
+                async function deleteExchanger(id) {
+                    if(!confirm('Удалить этот обменник?')) return;
+                    const res = await fetch('/api/admin/delete-exchanger', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ id })
+                    });
+                    if(res.ok) {
+                        loadExchangers();
+                        loadAdminData();
+                    }
                 }
 
                 async function loadShops() {
                     const res = await fetch('/api/shops');
                     const list = await res.json();
+                    shopsData = list;
                     const container = document.getElementById('shops-list');
                     container.innerHTML = '';
                     if(list.length === 0) {
@@ -645,57 +947,70 @@ app.get('/', (req, res) => {
 
                         let adBtn = '';
                         if(currentUser && (currentUser.status === 'admin' || (sh.can_ads && currentUser.username === sh.owner))) {
-                            adBtn = \`<button class="ad-post-btn" onclick="sendAdPost('Магазин', '\${sh.name}')">Реклама</button>\`;
+                            adBtn = `<button class="ad-post-btn" onclick="sendAdPost('Магазин', '${sh.name}')">Реклама</button>`;
                         }
 
-                        container.innerHTML += \`
+                        let adminTools = '';
+                        if(currentUser && currentUser.status === 'admin') {
+                            adminTools = `
+                                <button class="msg-action-btn" onclick="startEditShop(${sh.id})">Заменить/Ред</button>
+                                <button class="msg-action-btn" style="background:#ff3333;color:#fff;border:none;" onclick="deleteShop(${sh.id})">Удалить</button>
+                            `;
+                        }
+
+                        container.innerHTML += `
                             <div class="shop-card">
                                 <div class="shop-info">
-                                    <img src="\${sh.photoUrl || '${MAIN_IMAGE}'}" alt="shop">
+                                    <img src="${sh.photoUrl || '${MAIN_IMAGE}'}" alt="shop">
                                     <div>
-                                        <h4 style="color: #00eaff; font-size: 0.95em;">\${sh.name} <span style="font-size:0.7em;color:#aaa;">(@\${sh.owner || 'админ'})</span></h4>
-                                        <p style="font-size: 0.75em; color: #aaa; margin: 2px 0;">\${sh.description}</p>
-                                        <div>\${badges}</div>
+                                        <h4 style="color: #00eaff; font-size: 0.95em;">${sh.name} <span style="font-size:0.7em;color:#aaa;">(@${sh.owner || 'админ'})</span></h4>
+                                        <p style="font-size: 0.75em; color: #aaa; margin: 2px 0;">${sh.description}</p>
+                                        <div>${badges}</div>
+                                        <div style="margin-top:4px;">${adminTools}</div>
                                     </div>
                                 </div>
                                 <div class="btn-group">
-                                    \${adBtn}
-                                    <button class="complaint-btn" onclick="sendComplaint('Магазин', '\${sh.name}')">Жалоба</button>
-                                    <a href="\${sh.telegramUrl}" target="_blank" class="ex-tg-btn">Перейти</a>
+                                    ${adBtn}
+                                    <button class="complaint-btn" onclick="sendComplaint('Магазин', '${sh.name}')">Жалоба</button>
+                                    <a href="${sh.telegramUrl}" target="_blank" class="ex-tg-btn">Перейти</a>
                                 </div>
                             </div>
-                        \`;
+                        `;
                     });
                 }
 
-                async function addExchanger() {
-                    const data = {
-                        name: document.getElementById('ex-name').value,
-                        telegramUrl: document.getElementById('ex-url').value,
-                        owner: document.getElementById('ex-owner').value.replace('@',''),
-                        description: document.getElementById('ex-desc').value,
-                        can_post: document.getElementById('ex-post').checked,
-                        can_ads: document.getElementById('ex-ads').checked
-                    };
-                    const res = await fetch('/api/admin/add-exchanger', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(data)
-                    });
-                    if(res.ok) {
-                        alert('Обменник успешно добавлен!');
-                        loadExchangers();
-                        document.getElementById('ex-name').value = '';
-                        document.getElementById('ex-url').value = '';
-                        document.getElementById('ex-owner').value = '';
-                        document.getElementById('ex-desc').value = '';
-                    } else {
-                        alert('Ошибка добавления');
-                    }
+                function startEditShop(id) {
+                    const sh = shopsData.find(s => s.id === id);
+                    if(!sh) return;
+                    document.getElementById('edit-shop-id').value = sh.id;
+                    document.getElementById('shop-name').value = sh.name;
+                    document.getElementById('shop-url').value = sh.telegramUrl;
+                    document.getElementById('shop-owner').value = sh.owner || '';
+                    document.getElementById('shop-desc').value = sh.description;
+                    document.getElementById('shop-post').checked = sh.can_post === 1;
+                    document.getElementById('shop-ads').checked = sh.can_ads === 1;
+                    
+                    document.getElementById('shop-submit-btn').innerText = 'Сохранить изменения (Заменить)';
+                    document.getElementById('shop-cancel-btn').style.display = 'block';
+                    document.getElementById('admin-section').scrollIntoView({ behavior: 'smooth' });
                 }
 
-                async function addShop() {
+                function resetShopForm() {
+                    document.getElementById('edit-shop-id').value = '';
+                    document.getElementById('shop-name').value = '';
+                    document.getElementById('shop-url').value = '';
+                    document.getElementById('shop-owner').value = '';
+                    document.getElementById('shop-desc').value = '';
+                    document.getElementById('shop-post').checked = false;
+                    document.getElementById('shop-ads').checked = false;
+                    document.getElementById('shop-submit-btn').innerText = 'Добавить магазин';
+                    document.getElementById('shop-cancel-btn').style.display = 'none';
+                }
+
+                async function saveShop() {
+                    const id = document.getElementById('edit-shop-id').value;
                     const data = {
+                        id,
                         name: document.getElementById('shop-name').value,
                         telegramUrl: document.getElementById('shop-url').value,
                         owner: document.getElementById('shop-owner').value.replace('@',''),
@@ -703,31 +1018,67 @@ app.get('/', (req, res) => {
                         can_post: document.getElementById('shop-post').checked,
                         can_ads: document.getElementById('shop-ads').checked
                     };
-                    const res = await fetch('/api/admin/add-shop', {
+                    const url = id ? '/api/admin/edit-shop' : '/api/admin/add-shop';
+                    const res = await fetch(url, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(data)
                     });
                     if(res.ok) {
-                        alert('Магазин успешно добавлен!');
+                        alert(id ? 'Магазин успешно заменен/обновлен!' : 'Магазин успешно добавлен!');
+                        resetShopForm();
                         loadShops();
-                        document.getElementById('shop-name').value = '';
-                        document.getElementById('shop-url').value = '';
-                        document.getElementById('shop-owner').value = '';
-                        document.getElementById('shop-desc').value = '';
+                        loadAdminData();
                     } else {
-                        alert('Ошибка добавления');
+                        alert('Ошибка сохранения');
+                    }
+                }
+
+                async function deleteShop(id) {
+                    if(!confirm('Удалить этот магазин?')) return;
+                    const res = await fetch('/api/admin/delete-shop', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ id })
+                    });
+                    if(res.ok) {
+                        loadShops();
+                        loadAdminData();
                     }
                 }
 
                 socket.on('chat_history', (messages) => {
                     const box = document.getElementById('messages-box');
                     box.innerHTML = '';
+                    document.getElementById('pinned-banner').style.display = 'none';
+                    document.getElementById('unpin-btn-top').style.display = 'none';
                     messages.forEach(msg => appendMessage(msg));
                 });
 
                 socket.on('new_message', (msg) => {
                     appendMessage(msg);
+                });
+
+                socket.on('message_updated', (msg) => {
+                    const textEl = document.getElementById('msg-text-' + msg.id);
+                    if(textEl) textEl.innerText = msg.text;
+                });
+
+                socket.on('message_pinned', (msg) => {
+                    document.getElementById('pinned-banner').style.display = 'flex';
+                    document.getElementById('pinned-text-content').innerText = msg.text;
+                    if(currentUser && currentUser.status === 'admin') {
+                        document.getElementById('unpin-btn-top').style.display = 'inline-block';
+                    }
+                });
+
+                socket.on('message_unpinned', () => {
+                    document.getElementById('pinned-banner').style.display = 'none';
+                    document.getElementById('unpin-btn-top').style.display = 'none';
+                });
+
+                socket.on('chat_link_updated', (data) => {
+                    document.getElementById('top-tg-chat-btn').href = data.tgChatLink;
                 });
 
                 socket.on('system_message', (msg) => {
@@ -746,9 +1097,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('chat_message', (data) => {
-        // Проверка прав на отправку рекламы (только если админ или разрешено)
         const isAd = data.isAd ? 1 : 0;
-        
         db.run("INSERT INTO messages (username, avatarUrl, text, mediaUrl, mediaType, isAd) VALUES (?, ?, ?, ?, ?, ?)", 
             ['User', MAIN_IMAGE, data.text, data.mediaUrl || null, data.mediaType || null, isAd], function(err) {
             if (!err) {
@@ -760,8 +1109,37 @@ io.on('connection', (socket) => {
                     mediaUrl: data.mediaUrl, 
                     mediaType: data.mediaType,
                     isAd: isAd, 
+                    isPinned: 0,
                     timestamp: new Date() 
                 });
+            }
+        });
+    });
+
+    socket.on('edit_message', (data) => {
+        db.run("UPDATE messages SET text = ? WHERE id = ?", [data.text, data.id], (err) => {
+            if(!err) {
+                io.emit('message_updated', { id: data.id, text: data.text });
+            }
+        });
+    });
+
+    socket.on('pin_message', (data) => {
+        db.run("UPDATE messages SET isPinned = 0", [], () => {
+            db.run("UPDATE messages SET isPinned = 1 WHERE id = ?", [data.id], (err) => {
+                if(!err) {
+                    db.get("SELECT * FROM messages WHERE id = ?", [data.id], (err, row) => {
+                        if(row) io.emit('message_pinned', row);
+                    });
+                }
+            });
+        });
+    });
+
+    socket.on('unpin_message', () => {
+        db.run("UPDATE messages SET isPinned = 0", [], (err) => {
+            if (!err) {
+                io.emit('message_unpinned');
             }
         });
     });
