@@ -13,7 +13,7 @@ const io = new Server(server);
 const dbPath = path.join(__dirname, 'akihabara.db');
 const db = new sqlite3.Database(dbPath);
 
-const MAIN_IMAGE = 'https://i.ibb.co/6y4G8s5/265.png';
+const MAIN_IMAGE = '/banner.png';
 
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.json());
@@ -66,8 +66,8 @@ app.get('/', (req, res) => {
                 <title>$AKIHABARA_cc.228$ - Авторизация</title>
                 <style>
                     * { box-sizing: border-box; }
-                    body { margin: 0; padding: 0; background: url('${MAIN_IMAGE}') no-repeat center center fixed; background-size: cover; height: 100vh; display: flex; justify-content: center; align-items: center; font-family: sans-serif; overflow: hidden; }
-                    body::before { content: ""; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 0; }
+                    body { margin: 0; padding: 20px; background: #000 url('${MAIN_IMAGE}') no-repeat center center fixed; background-size: cover; min-height: 100vh; width: 100vw; display: flex; justify-content: center; align-items: center; font-family: sans-serif; overflow-y: auto; }
+                    body::before { content: ""; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 0; }
                     .login-box { position: relative; z-index: 1; background: rgba(20,20,20,0.95); padding: 30px; border-radius: 12px; border: 2px solid #ff0055; box-shadow: 0 0 25px #ff0055; text-align: center; width: 90%; max-width: 320px; }
                     h2 { color: #00eaff; margin-bottom: 20px; text-shadow: 0 0 10px #00eaff; font-size: 1.4em; }
                     input { width: 100%; padding: 12px; margin-bottom: 20px; background: #000; border: 1px solid #ff0055; color: #00eaff; border-radius: 6px; font-size: 1em; outline: none; }
@@ -100,39 +100,31 @@ app.get('/', (req, res) => {
                 body {
                     background: #000 url('${MAIN_IMAGE}') no-repeat center center fixed;
                     background-size: cover;
-                    height: 100vh;
+                    min-height: 100vh;
+                    width: 100vw;
                     color: #fff;
                     display: flex;
                     flex-direction: column;
                     align-items: center;
-                    overflow: hidden;
-                    width: 100vw;
+                    justify-content: flex-start;
+                    overflow-y: auto;
+                    padding: 20px 0;
                 }
-                body::before { content: ""; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.82); z-index: 0; }
+                body::before { content: ""; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.75); z-index: 0; }
 
-                /* Шапка с логотипом в стиле скриншота */
-                .main-header-banner {
-                    position: relative; z-index: 2; width: 100%; text-align: center; padding: 20px 10px;
-                }
-                .main-header-banner img {
-                    max-width: 450px; width: 90%; height: auto; filter: drop-shadow(0 0 15px rgba(0,234,255,0.6));
-                }
-
-                /* Центральный контейнер в стиле LSP Market */
                 .central-wrapper {
-                    position: relative; z-index: 2; width: 92%; max-width: 600px;
-                    background: rgba(15, 15, 15, 0.92); border: 2px solid #ff0055; border-radius: 12px;
-                    box-shadow: 0 0 25px rgba(255,0,85,0.4); display: flex; flex-direction: column;
-                    height: 70vh; padding: 20px; backdrop-filter: blur(10px);
+                    position: relative; z-index: 2; width: 95%; max-width: 800px;
+                    background: rgba(15, 15, 15, 0.90); border: 2px solid #ff0055; border-radius: 12px;
+                    box-shadow: 0 0 30px rgba(255,0,85,0.5); display: flex; flex-direction: column;
+                    height: 85vh; min-height: 500px; max-height: 900px; padding: 20px; backdrop-filter: blur(12px);
                 }
 
-                /* Кнопки меню как на скрине */
                 .menu-tabs {
-                    display: flex; gap: 10px; margin-bottom: 15px; background: rgba(0,0,0,0.5);
+                    display: flex; gap: 10px; margin-bottom: 15px; background: rgba(0,0,0,0.6);
                     padding: 8px; border-radius: 8px; border: 1px solid #333; justify-content: center; flex-wrap: wrap;
                 }
                 .tab-btn {
-                    background: #222; border: 1px solid #444; color: #fff; padding: 8px 16px;
+                    background: #222; border: 1px solid #444; color: #fff; padding: 8px 18px;
                     border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 0.9em; transition: 0.3s;
                 }
                 .tab-btn.active {
@@ -144,11 +136,10 @@ app.get('/', (req, res) => {
                 .section-content.active { display: flex; }
 
                 .list-box-title {
-                    text-align: center; color: #00eaff; font-size: 1.1em; margin-bottom: 15px;
+                    text-align: center; color: #00eaff; font-size: 1.15em; margin-bottom: 15px;
                     text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid #333; padding-bottom: 8px;
                 }
 
-                /* Чат стили */
                 #messages-box { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-bottom: 10px; }
                 .msg-card { display: flex; gap: 10px; max-width: 85%; background: rgba(25,25,25,0.85); padding: 8px 12px; border-radius: 8px; border: 1px solid #333; position: relative; }
                 .msg-card.own { align-self: flex-end; background: rgba(255, 0, 85, 0.15); border-color: #ff0055; flex-direction: row-reverse; }
@@ -177,10 +168,6 @@ app.get('/', (req, res) => {
             </style>
         </head>
         <body>
-            <div class="main-header-banner">
-                <img src="${MAIN_IMAGE}" alt="Akihabara Banner">
-            </div>
-
             <div class="central-wrapper">
                 <div class="menu-tabs">
                     <button class="tab-btn active" onclick="switchTab('chat', this)">Чат & Игры</button>
@@ -189,7 +176,6 @@ app.get('/', (req, res) => {
                     <button class="tab-btn" onclick="switchTab('profile', this)">Профиль</button>
                 </div>
 
-                <!-- ЧАТ -->
                 <div id="chat" class="section-content active">
                     <div class="list-box-title">Киберпанк Чат</div>
                     <div id="messages-box"></div>
@@ -215,19 +201,16 @@ app.get('/', (req, res) => {
                     </div>
                 </div>
 
-                <!-- ОБМЕННИКИ -->
                 <div id="exchangers" class="section-content">
                     <div class="list-box-title">Список доверенных обменников</div>
                     <div class="exchangers-grid" id="exchangers-list"></div>
                 </div>
 
-                <!-- МАГАЗИНЫ -->
                 <div id="shops" class="section-content">
                     <div class="list-box-title">Список доверенных магазинов</div>
                     <p style="color: #888; text-align: center; margin-top: 20px;">1. Тестовый магазин</p>
                 </div>
 
-                <!-- ПРОФИЛЬ -->
                 <div id="profile" class="section-content">
                     <div class="list-box-title">Ваш Профиль</div>
                     <div style="text-align: center; padding: 20px;">
