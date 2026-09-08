@@ -1,2196 +1,2480 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
-const fs = require('fs');
-const session = require('express-session');
-const bodyParser = require('body-parser');
-const multer = require('multer');
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>$AKIHABARA_cc.228$</title>
 
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server);
-
-const PORT = process.env.PORT || 3000;
-const MAIN_IMAGE = '/banner.png';
-const MAIN_ADMIN = 'koliaegorov99po-afk';
-
-const db = new sqlite3.Database(
-  path.join(__dirname, 'akihabara.db')
-);
-
-const uploadDir = path.join(__dirname, 'uploads');
-fs.mkdirSync(uploadDir, { recursive: true });
-
-app.use(bodyParser.urlencoded({ extended: true }));
-app.use(express.json({ limit: '2mb' }));
-
-app.use(express.static(path.join(__dirname, 'public')));
-app.use('/uploads', express.static(uploadDir));
-
-const sessionMiddleware = session({
-  secret:
-    process.env.SESSION_SECRET ||
-    'CHANGE_THIS_AKIHABARA_SECRET',
-
-  resave: false,
-  saveUninitialized: false,
-
-  cookie: {
-    maxAge: 1000 * 60 * 60 * 24 * 30,
-    httpOnly: true,
-    sameSite: 'lax'
-  }
-});
-
-app.use(sessionMiddleware);
-
-io.use((socket, next) => {
-  sessionMiddleware(socket.request, {}, next);
-});
-
-/* =========================
-   HELPERS
-========================= */
-
-function cleanUsername(value) {
-  return String(value || '')
-    .trim()
-    .replace(/^@+/, '')
-    .slice(0, 64);
+<style>
+* {
+  box-sizing: border-box;
 }
 
-function isMainAdmin(name) {
-  return (
-    cleanUsername(name).toLowerCase() ===
-    MAIN_ADMIN.toLowerCase()
-  );
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
 }
 
-function requireLogin(req, res, next) {
-  if (!req.session.username) {
-    return res.status(401).json({
-      error: 'Unauthorized'
-    });
-  }
-
-  next();
+body {
+  background: #050509;
+  color: #fff;
+  font-family: Arial, sans-serif;
 }
 
-function ensureUser(
-  username,
-  status = 'user',
-  invitedBy = null,
-  avatarUrl = MAIN_IMAGE,
-  cb = () => {}
-) {
-  username = cleanUsername(username);
-
-  if (!username) {
-    return cb(null);
-  }
-
-  db.run(
-    `
-    INSERT OR IGNORE INTO users
-    (
-      username,
-      status,
-      avatarUrl,
-      invitedBy
-    )
-    VALUES (?, ?, ?, ?)
-    `,
-    [
-      username,
-      status,
-      avatarUrl,
-      invitedBy
-    ],
-    err => cb(err)
-  );
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background:
+    linear-gradient(
+      rgba(0,0,0,.40),
+      rgba(0,0,0,.72)
+    ),
+    url("/background.jpg") center/cover fixed;
+  z-index: -1;
 }
 
-function emitStats() {
-  io.emit('stats_updated');
+.wrap {
+  width: min(1000px, 96%);
+  height: 94vh;
+  margin: 3vh auto;
+
+  background: rgba(5,5,10,.88);
+
+  border: 2px solid #ff0055;
+  border-radius: 16px;
+
+  box-shadow:
+    0 0 20px rgba(255,0,85,.35),
+    0 0 50px rgba(0,234,255,.12);
+
+  display: flex;
+  flex-direction: column;
+
+  padding: 12px;
 }
 
-/* =========================
-   MULTER
-========================= */
+.top {
+  padding: 10px;
 
-const storage = multer.diskStorage({
-  destination: (_, __, cb) => {
-    cb(null, uploadDir);
-  },
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 
-  filename: (_, file, cb) => {
-    const ext = path
-      .extname(file.originalname)
-      .toLowerCase();
+  gap: 8px;
+  flex-wrap: wrap;
 
-    const filename =
-      `${Date.now()}-` +
-      `${Math.random().toString(36).slice(2, 10)}` +
-      ext;
+  border: 1px solid #333;
+  border-radius: 10px;
 
-    cb(null, filename);
-  }
-});
-
-const upload = multer({
-  storage,
-
-  limits: {
-    fileSize: 50 * 1024 * 1024
-  },
-
-  fileFilter: (_, file, cb) => {
-    const allowed =
-      /^(image\/(jpeg|png|gif|webp)|video\/(mp4|webm|quicktime))$/i;
-
-    if (allowed.test(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(
-        new Error(
-          'Разрешены JPG, PNG, GIF, WEBP, MP4, WEBM и MOV'
-        ),
-        false
-      );
-    }
-  }
-});
-
-/* =========================
-   DATABASE
-========================= */
-
-db.serialize(() => {
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS users(
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT UNIQUE NOT NULL,
-      status TEXT DEFAULT 'user',
-      avatarUrl TEXT,
-      referralCode TEXT,
-      invitedBy TEXT,
-      invites INTEGER DEFAULT 0,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS messages(
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT NOT NULL,
-      avatarUrl TEXT,
-      text TEXT,
-      mediaUrl TEXT,
-      mediaType TEXT,
-      isAd INTEGER DEFAULT 0,
-      isPinned INTEGER DEFAULT 0,
-      replyTo INTEGER,
-      category TEXT DEFAULT 'chat',
-      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS message_likes(
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      messageId INTEGER NOT NULL,
-      username TEXT NOT NULL,
-      UNIQUE(messageId, username)
-    )
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS mentions(
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      messageId INTEGER,
-      mentionedUser TEXT,
-      byUser TEXT,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS notifications(
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT,
-      type TEXT,
-      messageId INTEGER,
-      text TEXT,
-      isRead INTEGER DEFAULT 0,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS exchangers(
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT,
-      photoUrl TEXT,
-      telegramUrl TEXT,
-      description TEXT,
-      owner TEXT,
-      can_post INTEGER DEFAULT 0,
-      can_ads INTEGER DEFAULT 0,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS shops(
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT,
-      photoUrl TEXT,
-      telegramUrl TEXT,
-      description TEXT,
-      owner TEXT,
-      can_post INTEGER DEFAULT 0,
-      can_ads INTEGER DEFAULT 0,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS complaints(
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      target_type TEXT,
-      target_name TEXT,
-      complainant TEXT,
-      reason TEXT,
-      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS settings(
-      key TEXT UNIQUE,
-      value TEXT
-    )
-  `);
-
-  db.run(
-    `
-    INSERT OR IGNORE INTO users
-    (
-      username,
-      status,
-      avatarUrl
-    )
-    VALUES (?, ?, ?)
-    `,
-    [
-      MAIN_ADMIN,
-      'admin',
-      MAIN_IMAGE
-    ]
-  );
-
-  db.run(
-    `
-    INSERT OR IGNORE INTO settings
-    (
-      key,
-      value
-    )
-    VALUES ('tg_chat_link', ?)
-    `,
-    [
-      'https://t.me/+K9gPO5PUyttlN2Zi'
-    ]
-  );
-});
-
-/* =========================
-   CAPTCHA
-========================= */
-
-function makeCaptchaText() {
-  const chars =
-    'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-
-  let result = '';
-
-  for (let i = 0; i < 5; i++) {
-    result +=
-      chars[
-        Math.floor(
-          Math.random() * chars.length
-        )
-      ];
-  }
-
-  return result;
+  background: rgba(17,17,25,.9);
 }
 
-app.get('/captcha.svg', (req, res) => {
+.logo {
+  color: #ff0055;
+  font-size: 18px;
+  font-weight: bold;
+}
 
-  const code = makeCaptchaText();
+.admin-name {
+  color: #00eaff;
+}
 
-  req.session.captchaAnswer = code;
-  req.session.captchaCreatedAt = Date.now();
+.users-count {
+  color: #fff;
+}
 
-  const lines = Array.from(
-    { length: 7 },
-    () => `
-      <line
-        x1="${Math.random() * 220}"
-        y1="${Math.random() * 70}"
-        x2="${Math.random() * 220}"
-        y2="${Math.random() * 70}"
-        stroke="#${Math.floor(
-          Math.random() * 0xffffff
-        )
-          .toString(16)
-          .padStart(6, '0')}"
-        stroke-width="${1 + Math.random() * 2}"
-        opacity=".55"
-      />
-    `
-  ).join('');
+.btn,
+.tabs button {
+  border: 1px solid #444;
 
-  const charsSvg = [...code]
-    .map((char, index) => {
+  background: #181820;
+  color: #fff;
 
-      const x = 28 + index * 39;
+  border-radius: 7px;
 
-      return `
-        <text
-          x="${x}"
-          y="52"
-          transform="rotate(
-            ${Math.floor(Math.random() * 25 - 12)}
-            ${x}
-            52
-          )"
-          font-family="Arial,sans-serif"
-          font-size="32"
-          font-weight="bold"
-          fill="#fff"
-        >
-          ${char}
-        </text>
-      `;
-    })
-    .join('');
+  padding: 8px 12px;
 
-  res.set(
-    'Content-Type',
-    'image/svg+xml'
-  );
+  cursor: pointer;
+}
 
-  res.set(
-    'Cache-Control',
-    'no-store, no-cache, must-revalidate'
-  );
+.btn:hover,
+.tabs button:hover {
+  border-color: #ff0055;
+}
 
-  res.send(`
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="220"
-      height="70"
-      viewBox="0 0 220 70"
+.tabs {
+  padding: 7px;
+
+  display: flex;
+  gap: 6px;
+
+  flex-wrap: wrap;
+
+  margin: 8px 0;
+
+  border: 1px solid #333;
+  border-radius: 10px;
+
+  background: rgba(17,17,25,.9);
+}
+
+.tabs button.active {
+  background: #ff0055;
+  border-color: #ff0055;
+}
+
+.section {
+  display: none;
+
+  flex: 1;
+  min-height: 0;
+
+  overflow: auto;
+}
+
+.section.active {
+  display: flex;
+  flex-direction: column;
+}
+
+.title {
+  text-align: center;
+
+  color: #00eaff;
+
+  padding: 10px;
+
+  border-bottom: 1px solid #333;
+
+  font-weight: bold;
+}
+
+.messages {
+  flex: 1;
+
+  overflow-y: auto;
+
+  padding: 10px;
+
+  display: flex;
+  flex-direction: column;
+
+  gap: 9px;
+}
+
+.msg {
+  max-width: 88%;
+
+  padding: 9px;
+
+  border: 1px solid #333;
+  border-radius: 10px;
+
+  background: rgba(22,22,28,.95);
+
+  position: relative;
+}
+
+.msg.own {
+  align-self: flex-end;
+
+  border-color: #ff0055;
+
+  background: rgba(36,13,24,.95);
+}
+
+.msg.ad {
+  border: 2px dashed #ff0055;
+}
+
+.head {
+  font-size: 12px;
+
+  color: #00eaff;
+
+  display: flex;
+
+  justify-content: space-between;
+
+  gap: 12px;
+}
+
+.text {
+  white-space: pre-wrap;
+
+  word-break: break-word;
+
+  margin-top: 5px;
+}
+
+.media {
+  max-width: 100%;
+  max-height: 320px;
+
+  margin-top: 8px;
+
+  border-radius: 7px;
+}
+
+.actions {
+  display: flex;
+
+  gap: 5px;
+
+  margin-top: 7px;
+
+  flex-wrap: wrap;
+}
+
+.actions button {
+  font-size: 12px;
+
+  padding: 5px 8px;
+
+  background: #222;
+
+  color: #00eaff;
+
+  border: 1px solid #444;
+
+  border-radius: 5px;
+}
+
+.actions button:hover {
+  border-color: #ff0055;
+}
+
+.like.active {
+  color: #ff0055 !important;
+}
+
+.mention {
+  color: #00eaff;
+
+  background: rgba(0,234,255,.12);
+
+  padding: 1px 3px;
+
+  border-radius: 3px;
+}
+
+.composer {
+  padding: 8px;
+
+  display: flex;
+
+  gap: 7px;
+
+  border: 1px solid #333;
+
+  border-radius: 10px;
+
+  background: rgba(17,17,25,.95);
+}
+
+.composer input[type="text"] {
+  flex: 1;
+
+  min-width: 0;
+
+  background: #000;
+
+  color: #fff;
+
+  border: 1px solid #444;
+
+  border-radius: 8px;
+
+  padding: 11px;
+}
+
+.composer input[type="file"] {
+  display: none;
+}
+
+.pinned {
+  display: none;
+
+  padding: 8px;
+
+  margin: 8px;
+
+  background: rgba(0,234,255,.08);
+
+  border: 1px solid #00eaff;
+
+  border-radius: 8px;
+}
+
+.profile,
+.directory {
+  padding: 10px;
+}
+
+.card {
+  padding: 10px;
+
+  display: flex;
+
+  justify-content: space-between;
+
+  gap: 10px;
+
+  align-items: center;
+
+  border: 1px solid #333;
+
+  border-radius: 10px;
+
+  background: rgba(17,17,25,.9);
+
+  margin-bottom: 8px;
+}
+
+.card img {
+  width: 48px;
+  height: 48px;
+
+  border-radius: 50%;
+
+  object-fit: cover;
+}
+
+.row {
+  display: flex;
+
+  gap: 7px;
+
+  align-items: center;
+
+  flex-wrap: wrap;
+}
+
+.small {
+  font-size: 12px;
+
+  color: #aaa;
+}
+
+.notify {
+  color: #ff0055;
+}
+
+.admin {
+  background: rgba(24,10,20,.95);
+
+  border: 1px dashed #ff0055;
+
+  padding: 10px;
+
+  border-radius: 10px;
+
+  margin-top: 10px;
+}
+
+.admin input,
+.admin textarea,
+.admin select {
+  width: 100%;
+
+  margin: 4px 0;
+
+  padding: 8px;
+
+  background: #000;
+
+  color: #fff;
+
+  border: 1px solid #444;
+
+  border-radius: 6px;
+}
+
+.admin textarea {
+  min-height: 80px;
+}
+
+.gamebox {
+  padding: 12px;
+
+  text-align: center;
+}
+
+.game {
+  background: rgba(17,17,17,.95);
+
+  border: 1px solid #333;
+
+  border-radius: 10px;
+
+  padding: 15px;
+
+  margin: 8px 0;
+}
+
+.game-result {
+  font-size: 28px;
+
+  margin: 12px;
+}
+
+textarea {
+  color: #fff;
+}
+
+@media (max-width: 600px) {
+
+  .wrap {
+    width: 100%;
+    height: 100vh;
+
+    margin: 0;
+
+    border-radius: 0;
+
+    padding: 7px;
+  }
+
+  .tabs button {
+    flex: 1 1 30%;
+
+    font-size: 12px;
+
+    padding: 7px 5px;
+  }
+
+  .msg {
+    max-width: 94%;
+  }
+
+  .top {
+    font-size: 13px;
+  }
+}
+</style>
+</head>
+
+<body>
+
+<div class="wrap">
+
+  <div class="top">
+
+    <span class="logo">
+      ⛩️ $AKIHABARA_cc.228$
+    </span>
+
+    <span class="admin-name">
+      👑 @koliaegorov99po-afk
+    </span>
+
+    <span class="users-count">
+      👥 <b id="count">...</b>
+    </span>
+
+    <a
+      id="tg"
+      class="btn"
+      href="https://t.me/+K9gPO5PUyttlN2Zi"
+      target="_blank"
     >
+      Telegram чат
+    </a>
 
-      <rect
-        width="220"
-        height="70"
-        rx="10"
-        fill="#090909"
-      />
+  </div>
 
-      ${lines}
 
-      <circle
-        cx="${20 + Math.random() * 180}"
-        cy="${10 + Math.random() * 50}"
-        r="${10 + Math.random() * 18}"
-        fill="#ff0055"
-        opacity=".12"
-      />
+  <div class="tabs">
 
-      ${charsSvg}
+    <button
+      class="active"
+      onclick="tab('chat',this)"
+    >
+      💬 Общение
+    </button>
 
-    </svg>
-  `);
-});
+    <button
+      onclick="tab('ads',this)"
+    >
+      📢 Реклама
+    </button>
+
+    <button
+      onclick="tab('games',this)"
+    >
+      🎮 Игры
+    </button>
+
+    <button
+      onclick="tab('ex',this)"
+    >
+      🔄 Обменники
+    </button>
+
+    <button
+      onclick="tab('shops',this)"
+    >
+      🛍 Магазины
+    </button>
+
+    <button
+      onclick="tab('profile',this)"
+    >
+      👤 Профиль
+    </button>
+
+  </div>
+
+
+  <!-- CHAT -->
+
+  <div
+    id="chat"
+    class="section active"
+  >
+
+    <div class="title">
+      💬 ЧАТ • ЛАЙКИ • ТЕГИ • ОТВЕТЫ • ЗАКРЕПЛЕНИЯ
+    </div>
+
+    <div
+      id="pin"
+      class="pinned"
+    ></div>
+
+    <div
+      id="messages"
+      class="messages"
+    ></div>
+
+    <div class="composer">
+
+      <label class="btn">
+
+        📎
+
+        <input
+          id="file"
+          type="file"
+          accept="image/*,video/*"
+        >
+
+      </label>
+
+      <input
+        id="input"
+        type="text"
+        placeholder="Напишите сообщение… @username для упоминания"
+      >
+
+      <button
+        class="btn"
+        onclick="send()"
+      >
+        ➤
+      </button>
+
+    </div>
+
+  </div>
+
+
+  <!-- ADS -->
+
+  <div
+    id="ads"
+    class="section"
+  >
+
+    <div class="title">
+      📢 РЕКЛАМА И ПОСТЫ
+    </div>
+
+    <div class="profile">
+
+      <p class="small">
+        Здесь можно публиковать рекламные посты,
+        добавлять фото или видео и сразу закреплять пост.
+      </p>
+
+      <textarea
+        id="adtext"
+        style="
+          width:100%;
+          height:120px;
+          background:#000;
+          color:#fff;
+          border:1px solid #444;
+          border-radius:7px;
+          padding:8px;
+        "
+        placeholder="Текст рекламного поста"
+      ></textarea>
+
+      <input
+        id="adfile"
+        type="file"
+        accept="image/*,video/*"
+        style="margin:8px 0"
+      >
+
+      <div class="row">
+
+        <label>
+          <input
+            id="adpin"
+            type="checkbox"
+          >
+          📌 Закрепить сразу
+        </label>
+
+        <button
+          class="btn"
+          onclick="publishAd()"
+        >
+          Опубликовать
+        </button>
+
+      </div>
+
+    </div>
+
+  </div>
+
+
+  <!-- GAMES -->
+
+  <div
+    id="games"
+    class="section"
+  >
+
+    <div class="title">
+      🎮 ИГРЫ
+    </div>
+
+    <div class="gamebox">
+
+      <div class="game">
+
+        <b>🎲 Кубик</b>
+
+        <div
+          id="dice"
+          class="game-result"
+        >
+          —
+        </div>
+
+        <button
+          class="btn"
+          onclick="rollDice()"
+        >
+          Бросить кубик
+        </button>
+
+      </div>
+
+
+      <div class="game">
+
+        <b>🪙 Орёл или решка</b>
+
+        <div
+          id="coin"
+          class="game-result"
+        >
+          —
+        </div>
+
+        <button
+          class="btn"
+          onclick="flipCoin()"
+        >
+          Подбросить
+        </button>
+
+      </div>
+
+
+      <div class="game">
+
+        <b>🎰 Мини-слоты</b>
+
+        <div
+          id="slots"
+          class="game-result"
+        >
+          🍒 • 🍋 • ⭐
+        </div>
+
+        <button
+          class="btn"
+          onclick="spin()"
+        >
+          Крутить
+        </button>
+
+      </div>
+
+    </div>
+
+  </div>
+
+
+  <!-- EXCHANGERS -->
+
+  <div
+    id="ex"
+    class="section"
+  >
+
+    <div class="title">
+      🔄 ДОВЕРЕННЫЕ ОБМЕННИКИ
+    </div>
+
+    <div
+      id="exlist"
+      class="directory"
+    ></div>
+
+  </div>
+
+
+  <!-- SHOPS -->
+
+  <div
+    id="shops"
+    class="section"
+  >
+
+    <div class="title">
+      🛍 ДОВЕРЕННЫЕ МАГАЗИНЫ
+    </div>
+
+    <div
+      id="shoplist"
+      class="directory"
+    ></div>
+
+  </div>
+
+
+  <!-- PROFILE -->
+
+  <div
+    id="profile"
+    class="section"
+  >
+
+    <div class="title">
+      👤 ПРОФИЛЬ
+    </div>
+
+    <div class="profile">
+
+      <h3 id="uname">
+        ...
+      </h3>
+
+      <p id="urole"></p>
+
+      <p>
+        🔗 Реферальная ссылка:
+      </p>
+
+      <input
+        id="ref"
+        readonly
+        style="
+          width:100%;
+          padding:8px;
+          background:#000;
+          color:#fff;
+          border:1px solid #444;
+          border-radius:6px;
+        "
+      >
+
+      <button
+        class="btn"
+        onclick="copyRef()"
+      >
+        Скопировать
+      </button>
+
+
+      <h4>
+        🔔 Упоминания
+        <span
+          id="ncount"
+          class="notify"
+        >
+          0
+        </span>
+      </h4>
+
+      <div id="notices"></div>
+
+
+      <div
+        id="admin"
+        class="admin"
+        style="display:none"
+      ></div>
+
+
+      <a
+        class="btn"
+        href="/logout"
+        style="
+          display:block;
+          text-align:center;
+          margin-top:10px;
+          text-decoration:none;
+        "
+      >
+        Выйти
+      </a>
+
+    </div>
+
+  </div>
+
+</div>
+
+
+<script src="/socket.io/socket.io.js"></script>
+
+<script>
+
+const socket = io();
+
+let me = null;
+let users = [];
+let messages = [];
+
+const $ = id =>
+  document.getElementById(id);
+
 
 /* =========================
-   LOGIN
+   API
 ========================= */
 
-app.post('/login', (req, res) => {
+async function api(url, options) {
 
-  const username =
-    cleanUsername(req.body.username);
+  const response =
+    await fetch(url, options);
 
-  const ref =
-    cleanUsername(req.body.ref);
+  if (!response.ok) {
 
-  const captcha =
-    String(req.body.captcha || '')
-      .trim()
-      .toUpperCase();
+    const data =
+      await response
+        .json()
+        .catch(() => ({}));
 
-  const answer =
-    String(
-      req.session.captchaAnswer || ''
-    ).toUpperCase();
-
-  const created =
-    Number(
-      req.session.captchaCreatedAt || 0
+    throw new Error(
+      data.error || 'Ошибка'
     );
-
-  req.session.captchaAnswer = null;
-  req.session.captchaCreatedAt = null;
-
-  if (!username) {
-    return res.redirect('/login.html');
   }
 
-  if (
-    !answer ||
-    !captcha ||
-    captcha !== answer ||
-    !created ||
-    Date.now() - created > 5 * 60 * 1000
-  ) {
-    return res.status(400).send(`
-      Неверная или просроченная CAPTCHA.
-      <br><br>
-      <a href="/login.html">
-        Вернуться
-      </a>
-    `);
+  return response.json();
+}
+
+
+/* =========================
+   INIT
+========================= */
+
+async function init() {
+
+  try {
+
+    me =
+      await api('/api/user');
+
+    users =
+      await api('/api/users');
+
+    const stats =
+      await api('/api/stats');
+
+
+    $('count').textContent =
+      stats.totalUsers;
+
+
+    $('tg').href =
+      stats.tgChatLink ||
+      'https://t.me/+K9gPO5PUyttlN2Zi';
+
+
+    $('uname').textContent =
+      '@' + me.username;
+
+
+    $('urole').textContent =
+      'Статус: ' +
+      String(me.status).toUpperCase();
+
+
+    $('ref').value =
+      location.origin +
+      '/?ref=' +
+      encodeURIComponent(me.username);
+
+
+    await loadNotices();
+
+
+    if (me.status === 'admin') {
+      await loadAdmin();
+    }
+
+    await loadDir('ex');
+    await loadDir('shops');
+
+  } catch (error) {
+
+    location.href =
+      '/login.html';
+  }
+}
+
+
+/* =========================
+   TABS
+========================= */
+
+function tab(id, button) {
+
+  document
+    .querySelectorAll('.section')
+    .forEach(section => {
+      section.classList.remove('active');
+    });
+
+
+  document
+    .querySelectorAll('.tabs button')
+    .forEach(btn => {
+      btn.classList.remove('active');
+    });
+
+
+  $(id).classList.add('active');
+
+  button.classList.add('active');
+
+
+  if (id === 'ex') {
+    loadDir('ex');
   }
 
-  req.session.username = username;
+  if (id === 'shops') {
+    loadDir('shops');
+  }
 
-  const role =
-    isMainAdmin(username)
-      ? 'admin'
-      : 'user';
+}
 
-  db.get(
-    `
-    SELECT *
-    FROM users
-    WHERE username = ?
-    `,
-    [username],
-    (err, user) => {
 
-      if (err) {
-        return res
-          .status(500)
-          .send('Database error');
-      }
+/* =========================
+   ESCAPE
+========================= */
 
-      if (user) {
+function esc(value) {
 
-        if (
-          isMainAdmin(username) &&
-          user.status !== 'admin'
-        ) {
-          db.run(
-            `
-            UPDATE users
-            SET status = 'admin'
-            WHERE username = ?
-            `,
-            [username]
-          );
+  return String(value ?? '')
+    .replace(
+      /[&<>"']/g,
+      char => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      })[char]
+    );
+}
+
+
+/* =========================
+   MESSAGE TEXT
+========================= */
+
+function renderText(text) {
+
+  return esc(text)
+    .replace(
+      /@([A-Za-z0-9_-]{2,64})/g,
+      '<span class="mention">@$1</span>'
+    );
+}
+
+
+/* =========================
+   ADD MESSAGE
+========================= */
+
+function addMsg(message) {
+
+  messages.push(message);
+
+  const own =
+    message.username === me.username;
+
+
+  const element =
+    document.createElement('div');
+
+
+  element.className =
+    'msg ' +
+    (own ? 'own ' : '') +
+    (message.isAd ? 'ad' : '');
+
+
+  element.id =
+    'm' + message.id;
+
+
+  let media = '';
+
+
+  if (message.mediaUrl) {
+
+    if (
+      message.mediaType === 'video'
+    ) {
+
+      media = `
+        <video
+          class="media"
+          controls
+          src="${esc(message.mediaUrl)}"
+        ></video>
+      `;
+
+    } else {
+
+      media = `
+        <img
+          class="media"
+          src="${esc(message.mediaUrl)}"
+        >
+      `;
+    }
+  }
+
+
+  const adminButtons =
+    me.status === 'admin'
+      ? `
+        <button
+          onclick="pin(${message.id})"
+        >
+          📌 ${message.isPinned
+            ? 'Открепить'
+            : 'Закрепить'}
+        </button>
+      `
+      : '';
+
+
+  const ownerButtons =
+    own || me.status === 'admin'
+      ? `
+        <button
+          onclick="edit(${message.id})"
+        >
+          ✏️
+        </button>
+
+        <button
+          onclick="del(${message.id})"
+        >
+          🗑
+        </button>
+      `
+      : '';
+
+
+  element.innerHTML = `
+
+    <div class="head">
+
+      <b>
+        @${esc(message.username)}
+      </b>
+
+      <span>
+        ${
+          message.category === 'ad'
+            ? '📢 РЕКЛАМА '
+            : ''
         }
 
-        return res.redirect('/');
-      }
+        ${new Date(
+          message.timestamp
+        ).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit'
+        })}
 
-      if (ref && ref !== username) {
+      </span>
 
-        db.get(
-          `
-          SELECT username
-          FROM users
-          WHERE username = ?
-          `,
-          [ref],
-          (e, refUser) => {
+    </div>
 
-            const invitedBy =
-              refUser
-                ? refUser.username
-                : null;
 
-            if (refUser) {
-              db.run(
-                `
-                UPDATE users
-                SET invites = invites + 1
-                WHERE username = ?
-                `,
-                [refUser.username]
-              );
-            }
+    <div class="text">
+      ${renderText(message.text)}
+    </div>
 
-            ensureUser(
-              username,
-              role,
-              invitedBy,
-              MAIN_IMAGE,
-              () => {
 
-                io.emit(
-                  'system_message',
-                  {
-                    text:
-                      `🎉 Пользователь @${username} ` +
-                      `присоединился к платформе!`
-                  }
-                );
+    ${media}
 
-                emitStats();
 
-                res.redirect('/');
-              }
-            );
-          }
-        );
+    <div class="actions">
 
-      } else {
+      <button
+        class="like ${
+          message.liked
+            ? 'active'
+            : ''
+        }"
+        onclick="like(${message.id})"
+      >
+        ❤️
+        <span>
+          ${message.likeCount || 0}
+        </span>
+      </button>
 
-        ensureUser(
-          username,
-          role,
-          null,
-          MAIN_IMAGE,
-          () => {
 
-            io.emit(
-              'system_message',
-              {
-                text:
-                  `🎉 Пользователь @${username} ` +
-                  `присоединился к платформе!`
-              }
-            );
+      <button
+        onclick="reply(${message.id})"
+      >
+        ↩ Ответить
+      </button>
 
-            emitStats();
 
-            res.redirect('/');
-          }
-        );
-      }
+      ${adminButtons}
+
+      ${ownerButtons}
+
+    </div>
+
+  `;
+
+
+  $('messages')
+    .appendChild(element);
+
+
+  if (message.isPinned) {
+    showPin(message);
+  }
+
+}
+
+
+/* =========================
+   LOAD MESSAGES
+========================= */
+
+async function loadMessages() {
+
+  messages = [];
+
+  $('messages').innerHTML = '';
+
+
+  const data =
+    await api('/api/messages');
+
+
+  data.forEach(addMsg);
+
+
+  $('messages').scrollTop =
+    $('messages').scrollHeight;
+}
+
+
+/* =========================
+   SEND MESSAGE
+========================= */
+
+async function send() {
+
+  const input =
+    $('input');
+
+  const text =
+    input.value.trim();
+
+
+  const file =
+    $('file').files[0];
+
+
+  if (!text && !file) {
+    return;
+  }
+
+
+  let mediaUrl = null;
+  let mediaType = null;
+
+
+  if (file) {
+
+    const form =
+      new FormData();
+
+    form.append(
+      'media',
+      file
+    );
+
+
+    const result =
+      await api(
+        '/api/upload',
+        {
+          method: 'POST',
+          body: form
+        }
+      );
+
+
+    mediaUrl =
+      result.mediaUrl;
+
+    mediaType =
+      result.mediaType;
+  }
+
+
+  socket.emit(
+    'chat_message',
+    {
+      text,
+      mediaUrl,
+      mediaType,
+      category: 'chat'
     }
   );
-});
 
-app.get('/logout', (req, res) => {
-  req.session.destroy(() => {
-    res.redirect('/');
-  });
-});
+
+  input.value = '';
+
+  $('file').value = '';
+}
+
 
 /* =========================
-   USER API
+   PUBLISH AD
 ========================= */
 
-app.get(
-  '/api/user',
-  requireLogin,
-  (req, res) => {
+async function publishAd() {
 
-    db.get(
-      `
-      SELECT *
-      FROM users
-      WHERE username = ?
-      `,
-      [req.session.username],
-      (err, user) => {
+  const text =
+    $('adtext')
+      .value
+      .trim();
 
-        if (err || !user) {
-          return res
-            .status(404)
-            .json({
-              error: 'User not found'
-            });
-        }
 
-        res.json(user);
-      }
+  if (!text) {
+
+    alert(
+      'Введите текст рекламы'
     );
+
+    return;
   }
-);
 
-app.get(
-  '/api/users',
-  requireLogin,
-  (req, res) => {
 
-    db.all(
-      `
-      SELECT
-        username,
-        status,
-        avatarUrl,
-        createdAt
-      FROM users
-      ORDER BY createdAt ASC
-      `,
-      (err, rows) => {
+  let mediaUrl = null;
+  let mediaType = null;
 
-        if (err) {
-          return res
-            .status(500)
-            .json({
-              error: err.message
-            });
-        }
 
-        res.json(rows);
-      }
+  const file =
+    $('adfile').files[0];
+
+
+  if (file) {
+
+    const form =
+      new FormData();
+
+    form.append(
+      'media',
+      file
     );
-  }
-);
 
-app.get('/api/stats', (req, res) => {
 
-  db.get(
-    `
-    SELECT COUNT(*) count
-    FROM users
-    `,
-    (e, row) => {
-
-      db.get(
-        `
-        SELECT value
-        FROM settings
-        WHERE key = 'tg_chat_link'
-        `,
-        (e2, setting) => {
-
-          res.json({
-            totalUsers:
-              row?.count || 0,
-
-            tgChatLink:
-              setting?.value || ''
-          });
+    const result =
+      await api(
+        '/api/upload',
+        {
+          method: 'POST',
+          body: form
         }
+      );
+
+
+    mediaUrl =
+      result.mediaUrl;
+
+    mediaType =
+      result.mediaType;
+  }
+
+
+  socket.emit(
+    'chat_message',
+    {
+      text,
+      mediaUrl,
+      mediaType,
+
+      isAd: true,
+
+      category: 'ad',
+
+      isPinned:
+        $('adpin').checked
+
+    },
+    result => {
+
+      if (
+        result &&
+        result.error
+      ) {
+
+        alert(result.error);
+
+        return;
+      }
+
+
+      $('adtext').value = '';
+
+      $('adfile').value = '';
+
+      $('adpin').checked = false;
+
+      alert(
+        'Рекламный пост опубликован'
       );
     }
   );
-});
+}
 
-app.get(
-  '/api/referrals',
-  requireLogin,
-  (req, res) => {
-
-    db.all(
-      `
-      SELECT
-        username,
-        status,
-        createdAt
-      FROM users
-      WHERE invitedBy = ?
-      ORDER BY createdAt DESC
-      `,
-      [req.session.username],
-      (err, rows) => {
-
-        if (err) {
-          return res
-            .status(500)
-            .json({
-              error: err.message
-            });
-        }
-
-        res.json(rows);
-      }
-    );
-  }
-);
-
-/* =========================
-   NOTIFICATIONS
-========================= */
-
-app.get(
-  '/api/notifications',
-  requireLogin,
-  (req, res) => {
-
-    db.all(
-      `
-      SELECT *
-      FROM notifications
-      WHERE username = ?
-      ORDER BY id DESC
-      LIMIT 50
-      `,
-      [req.session.username],
-      (err, rows) => {
-
-        if (err) {
-          return res
-            .status(500)
-            .json({
-              error: err.message
-            });
-        }
-
-        res.json(rows);
-      }
-    );
-  }
-);
-
-app.post(
-  '/api/notifications/read',
-  requireLogin,
-  (req, res) => {
-
-    db.run(
-      `
-      UPDATE notifications
-      SET isRead = 1
-      WHERE username = ?
-      `,
-      [req.session.username],
-      () => {
-
-        res.json({
-          success: true
-        });
-      }
-    );
-  }
-);
-
-/* =========================
-   UPLOAD
-========================= */
-
-app.post(
-  '/api/upload',
-  requireLogin,
-  (req, res) => {
-
-    upload.single('media')(
-      req,
-      res,
-      err => {
-
-        if (err) {
-          return res
-            .status(400)
-            .json({
-              error: err.message
-            });
-        }
-
-        if (!req.file) {
-          return res
-            .status(400)
-            .json({
-              error: 'Файл не выбран'
-            });
-        }
-
-        const mediaType =
-          req.file.mimetype.startsWith('video/')
-            ? 'video'
-            : 'image';
-
-        res.json({
-          success: true,
-
-          mediaUrl:
-            `/uploads/${req.file.filename}`,
-
-          mediaType
-        });
-      }
-    );
-  }
-);
-
-/* =========================
-   MESSAGES API
-========================= */
-
-app.get(
-  '/api/messages',
-  requireLogin,
-  (req, res) => {
-
-    const username =
-      req.session.username;
-
-    db.all(
-      `
-      SELECT
-        m.*,
-
-        COALESCE(
-          (
-            SELECT COUNT(*)
-            FROM message_likes l
-            WHERE l.messageId = m.id
-          ),
-          0
-        ) AS likeCount,
-
-        EXISTS(
-          SELECT 1
-          FROM message_likes l2
-          WHERE
-            l2.messageId = m.id
-            AND l2.username = ?
-        ) AS liked
-
-      FROM messages m
-      ORDER BY m.id DESC
-      LIMIT 100
-      `,
-      [username],
-      (err, rows) => {
-
-        if (err) {
-          return res
-            .status(500)
-            .json({
-              error: err.message
-            });
-        }
-
-        res.json(rows.reverse());
-      }
-    );
-  }
-);
 
 /* =========================
    LIKE
 ========================= */
 
-app.post(
-  '/api/messages/:id/like',
-  requireLogin,
-  (req, res) => {
+function like(id) {
 
-    const id =
-      Number(req.params.id);
+  socket.emit(
+    'like_message',
+    { id }
+  );
+}
 
-    const username =
-      req.session.username;
 
-    db.run(
-      `
-      INSERT OR IGNORE INTO
-      message_likes
-      (
-        messageId,
-        username
-      )
-      VALUES (?, ?)
-      `,
-      [id, username],
-      function (err) {
+/* =========================
+   REPLY
+========================= */
 
-        if (err) {
-          return res
-            .status(500)
-            .json({
-              error: err.message
-            });
-        }
+function reply(id) {
 
-        if (this.changes === 0) {
+  const message =
+    messages.find(
+      item => item.id === id
+    );
 
-          db.run(
-            `
-            DELETE FROM message_likes
-            WHERE
-              messageId = ?
-              AND username = ?
-            `,
-            [id, username]
-          );
-        }
 
-        db.get(
-          `
-          SELECT COUNT(*) count
-          FROM message_likes
-          WHERE messageId = ?
-          `,
-          [id],
-          (e, row) => {
+  if (!message) {
+    return;
+  }
 
-            db.get(
-              `
-              SELECT 1
-              FROM message_likes
-              WHERE
-                messageId = ?
-                AND username = ?
-              `,
-              [id, username],
-              (e2, exists) => {
 
-                const result = {
-                  messageId: id,
-                  likeCount:
-                    row?.count || 0,
-                  liked:
-                    !!exists
-                };
+  $('input').value =
+    '@' +
+    message.username +
+    ' ';
 
-                io.emit(
-                  'like_updated',
-                  result
-                );
 
-                res.json(result);
-              }
-            );
-          }
-        );
+  $('input').focus();
+}
+
+
+/* =========================
+   EDIT
+========================= */
+
+function edit(id) {
+
+  const message =
+    messages.find(
+      item => item.id === id
+    );
+
+
+  if (!message) {
+    return;
+  }
+
+
+  const text =
+    prompt(
+      'Введите новый текст',
+      message.text
+    );
+
+
+  if (text !== null) {
+
+    socket.emit(
+      'edit_message',
+      {
+        id,
+        text
       }
     );
   }
-);
+}
+
+
+/* =========================
+   DELETE
+========================= */
+
+function del(id) {
+
+  if (
+    !confirm(
+      'Удалить сообщение?'
+    )
+  ) {
+    return;
+  }
+
+
+  socket.emit(
+    'delete_message',
+    { id }
+  );
+}
+
+
+/* =========================
+   PIN
+========================= */
+
+function pin(id) {
+
+  socket.emit(
+    'pin_message',
+    { id }
+  );
+}
+
+
+/* =========================
+   SHOW PIN
+========================= */
+
+function showPin(message) {
+
+  const pin =
+    $('pin');
+
+
+  pin.style.display =
+    'block';
+
+
+  pin.innerHTML =
+    '📌 <b>Закреплено:</b> ' +
+    renderText(
+      message.text || ''
+    );
+}
+
+
+/* =========================
+   DIRECTORY
+========================= */
+
+async function loadDir(kind) {
+
+  const url =
+    kind === 'ex'
+      ? '/api/exchangers'
+      : '/api/shops';
+
+
+  const list =
+    await api(url);
+
+
+  const box =
+    $(
+      kind === 'ex'
+        ? 'exlist'
+        : 'shoplist'
+    );
+
+
+  box.innerHTML = '';
+
+
+  if (!list.length) {
+
+    box.innerHTML =
+      '<p class="small">Пока ничего не добавлено.</p>';
+
+    return;
+  }
+
+
+  list.forEach(item => {
+
+    const card =
+      document.createElement('div');
+
+
+    card.className =
+      'card';
+
+
+    card.innerHTML = `
+
+      <div class="row">
+
+        <img
+          src="${esc(
+            item.photoUrl ||
+            '/background.jpg'
+          )}"
+        >
+
+        <div>
+
+          <b>
+            ${esc(item.name)}
+          </b>
+
+          <div class="small">
+            @${esc(
+              item.owner ||
+              'admin'
+            )}
+          </div>
+
+          <div class="small">
+            ${esc(
+              item.description ||
+              ''
+            )}
+          </div>
+
+        </div>
+
+      </div>
+
+
+      <div class="row">
+
+        ${
+          item.can_ads
+            ? `
+              <button
+                class="btn"
+                onclick="useAd(${JSON.stringify(
+                  item.name
+                )})"
+              >
+                📢 Реклама
+              </button>
+            `
+            : ''
+        }
+
+
+        <button
+          class="btn"
+          onclick="complain(
+            ${JSON.stringify(
+              kind
+            )},
+            ${JSON.stringify(
+              item.name
+            )}
+          )"
+        >
+          ⚠️ Жалоба
+        </button>
+
+
+        <a
+          class="btn"
+          href="${esc(
+            item.telegramUrl ||
+            '#'
+          )}"
+          target="_blank"
+        >
+          Telegram
+        </a>
+
+      </div>
+
+    `;
+
+
+    box.appendChild(card);
+
+  });
+
+}
+
+
+/* =========================
+   USE AD
+========================= */
+
+function useAd(name) {
+
+  const button =
+    document.querySelectorAll(
+      '.tabs button'
+    )[1];
+
+
+  tab(
+    'ads',
+    button
+  );
+
+
+  $('adtext').value =
+    '📢 РЕКЛАМА: ' +
+    name +
+    '\n\n';
+}
+
+
+/* =========================
+   COMPLAINT
+========================= */
+
+async function complain(
+  type,
+  name
+) {
+
+  const reason =
+    prompt(
+      'Укажите причину жалобы'
+    );
+
+
+  if (!reason) {
+    return;
+  }
+
+
+  await api(
+    '/api/complaint',
+    {
+      method: 'POST',
+
+      headers: {
+        'Content-Type':
+          'application/json'
+      },
+
+      body: JSON.stringify({
+        target_type:
+          type === 'ex'
+            ? 'Обменник'
+            : 'Магазин',
+
+        target_name:
+          name,
+
+        reason
+      })
+    }
+  );
+
+
+  alert(
+    'Жалоба отправлена'
+  );
+}
+
+
+/* =========================
+   NOTIFICATIONS
+========================= */
+
+async function loadNotices() {
+
+  const data =
+    await api(
+      '/api/notifications'
+    );
+
+
+  const unread =
+    data.filter(
+      item => !item.isRead
+    ).length;
+
+
+  $('ncount').textContent =
+    unread;
+
+
+  $('notices').innerHTML =
+    data.map(item => `
+
+      <div class="small">
+
+        🔔 ${esc(item.text)}
+
+        •
+        ${new Date(
+          item.createdAt
+        ).toLocaleString()}
+
+      </div>
+
+    `).join('');
+
+
+  await api(
+    '/api/notifications/read',
+    {
+      method: 'POST'
+    }
+  );
+}
+
 
 /* =========================
    ADMIN
 ========================= */
 
-function mainAdminOnly(
-  req,
-  res,
-  next
-) {
+async function loadAdmin() {
 
-  if (!req.session.username) {
-    return res
-      .status(401)
-      .json({
-        error: 'Unauthorized'
-      });
-  }
+  const data =
+    await api(
+      '/api/admin/data'
+    );
 
-  if (
-    !isMainAdmin(
-      req.session.username
-    )
-  ) {
-    return res
-      .status(403)
-      .json({
-        error:
-          'Только главный администратор'
-      });
-  }
 
-  next();
-}
+  const admin =
+    $('admin');
 
-function anyAdmin(
-  req,
-  res,
-  next
-) {
 
-  if (!req.session.username) {
-    return res
-      .status(401)
-      .json({
-        error: 'Unauthorized'
-      });
-  }
+  admin.style.display =
+    'block';
 
-  db.get(
-    `
-    SELECT status
-    FROM users
-    WHERE username = ?
-    `,
-    [req.session.username],
-    (err, user) => {
 
-      if (
-        user &&
-        user.status === 'admin'
-      ) {
-        return next();
-      }
-
-      res
-        .status(403)
-        .json({
-          error: 'Access denied'
-        });
-    }
-  );
-}
-
-/* =========================
-   ADMIN DATA
-========================= */
-
-app.get(
-  '/api/admin/data',
-  anyAdmin,
-  (req, res) => {
-
-    db.all(
-      `
-      SELECT
-        username,
-        status,
-        invitedBy,
-        invites,
-        createdAt
-      FROM users
-      ORDER BY createdAt DESC
-      `,
-      (e, users) => {
-
-        db.all(
+  const usersOptions =
+    data.users
+      .filter(
+        user =>
+          user.username
+            .toLowerCase() !==
+          'koliaegorov99po-afk'
+      )
+      .map(
+        user =>
           `
-          SELECT *
-          FROM complaints
-          ORDER BY timestamp DESC
-          `,
-          (e2, complaints) => {
-
-            db.all(
-              `
-              SELECT *
-              FROM exchangers
-              ORDER BY id DESC
-              `,
-              (e3, exchangers) => {
-
-                db.all(
-                  `
-                  SELECT *
-                  FROM shops
-                  ORDER BY id DESC
-                  `,
-                  (e4, shops) => {
-
-                    db.get(
-                      `
-                      SELECT value
-                      FROM settings
-                      WHERE key = 'tg_chat_link'
-                      `,
-                      (e5, setting) => {
-
-                        res.json({
-                          users,
-                          complaints,
-                          exchangers,
-                          shops,
-
-                          currentAdmin:
-                            req.session.username,
-
-                          tgChatLink:
-                            setting?.value || ''
-                        });
-                      }
-                    );
-                  }
-                );
-              }
-            );
-          }
-        );
-      }
-    );
-  }
-);
-
-/* =========================
-   TELEGRAM CHAT LINK
-========================= */
-
-app.post(
-  '/api/admin/update-chat-link',
-  mainAdminOnly,
-  (req, res) => {
-
-    const link =
-      String(
-        req.body.tgChatLink || ''
-      ).trim();
-
-    if (
-      !/^https?:\/\//i.test(link)
-    ) {
-      return res
-        .status(400)
-        .json({
-          error:
-            'Некорректная ссылка'
-        });
-    }
-
-    db.run(
-      `
-      INSERT OR REPLACE INTO
-      settings
-      (
-        key,
-        value
+          <option
+            value="${esc(
+              user.username
+            )}"
+          >
+            @${esc(
+              user.username
+            )}
+          </option>
+          `
       )
-      VALUES
-      (
-        'tg_chat_link',
-        ?
+      .join('');
+
+
+  const complaints =
+    data.complaints
+      .map(
+        item =>
+          `
+          <div class="small">
+
+            [${esc(
+              item.target_type
+            )}]
+
+            ${esc(
+              item.target_name
+            )}
+
+            —
+
+            @${esc(
+              item.complainant
+            )}
+
+            :
+
+            ${esc(
+              item.reason
+            )}
+
+          </div>
+          `
       )
-      `,
-      [link],
-      err => {
+      .join('');
 
-        if (err) {
-          return res
-            .status(500)
-            .json({
-              error: err.message
-            });
-        }
 
-        io.emit(
-          'chat_link_updated',
-          {
-            tgChatLink: link
-          }
-        );
+  admin.innerHTML = `
 
-        res.json({
-          success: true
-        });
-      }
-    );
-  }
-);
+    <h3>
+      👑 Панель администратора
+    </h3>
 
-/* =========================
-   ADMIN STATUS
-========================= */
 
-app.post(
-  '/api/admin/set-status',
-  mainAdminOnly,
-  (req, res) => {
+    <p>
+      Пользователей:
+      <b>${data.users.length}</b>
+    </p>
 
-    const target =
-      cleanUsername(
-        req.body.targetUser
-      );
 
-    const status =
-      req.body.newStatus === 'admin'
-        ? 'admin'
-        : 'user';
+    <hr>
 
-    if (isMainAdmin(target)) {
-      return res
-        .status(400)
-        .json({
-          error:
-            'Нельзя изменить статус главного администратора'
-        });
+
+    <h4>
+      🔗 Telegram чат
+    </h4>
+
+
+    <input
+      id="chatlink"
+      value="${esc(
+        data.tgChatLink
+      )}"
+      placeholder="Ссылка Telegram"
+    >
+
+
+    <button
+      class="btn"
+      onclick="saveLink()"
+    >
+      Сохранить ссылку
+    </button>
+
+
+    <hr>
+
+
+    <h4>
+      👑 Управление пользователями
+    </h4>
+
+
+    <select id="target">
+      ${usersOptions}
+    </select>
+
+
+    <select id="status">
+
+      <option value="admin">
+        Дать админку
+      </option>
+
+      <option value="user">
+        Убрать админку
+      </option>
+
+    </select>
+
+
+    <button
+      class="btn"
+      onclick="setStatus()"
+    >
+      Сохранить статус
+    </button>
+
+
+    <hr>
+
+
+    <h4>
+      ➕ Добавить обменник / магазин
+    </h4>
+
+
+    <select id="dtype">
+
+      <option value="exchanger">
+        🔄 Обменник
+      </option>
+
+      <option value="shop">
+        🛍 Магазин
+      </option>
+
+    </select>
+
+
+    <input
+      id="dn"
+      placeholder="Название"
+    >
+
+
+    <input
+      id="du"
+      placeholder="Telegram URL"
+    >
+
+
+    <input
+      id="do"
+      placeholder="@username владельца"
+    >
+
+
+    <textarea
+      id="dd"
+      placeholder="Описание"
+    ></textarea>
+
+
+    <label>
+
+      <input
+        id="da"
+        type="checkbox"
+      >
+
+      Разрешить рекламу
+
+    </label>
+
+
+    <br><br>
+
+
+    <button
+      class="btn"
+      onclick="addDir()"
+    >
+      Добавить
+    </button>
+
+
+    <hr>
+
+
+    <h4>
+      ⚠️ Жалобы
+    </h4>
+
+
+    ${
+      complaints ||
+      '<div class="small">Жалоб нет</div>'
     }
 
-    db.run(
-      `
-      UPDATE users
-      SET status = ?
-      WHERE username = ?
-      `,
-      [status, target],
-      function (err) {
+  `;
+}
 
-        if (err) {
-          return res
-            .status(500)
-            .json({
-              error: err.message
-            });
-        }
-
-        res.json({
-          success:
-            this.changes > 0
-        });
-      }
-    );
-  }
-);
 
 /* =========================
-   DELETE USER
+   SAVE TELEGRAM LINK
 ========================= */
 
-app.post(
-  '/api/admin/delete-user',
-  mainAdminOnly,
-  (req, res) => {
+async function saveLink() {
 
-    const target =
-      cleanUsername(
-        req.body.targetUser
-      );
+  const link =
+    $('chatlink').value.trim();
 
-    if (isMainAdmin(target)) {
-      return res
-        .status(400)
-        .json({
-          error:
-            'Нельзя удалить главного администратора'
-        });
+
+  await api(
+    '/api/admin/update-chat-link',
+    {
+      method: 'POST',
+
+      headers: {
+        'Content-Type':
+          'application/json'
+      },
+
+      body: JSON.stringify({
+        tgChatLink: link
+      })
     }
+  );
 
-    db.run(
-      `
-      DELETE FROM users
-      WHERE username = ?
-      `,
-      [target],
-      function (err) {
 
-        if (err) {
-          return res
-            .status(500)
-            .json({
-              error: err.message
-            });
-        }
+  alert(
+    'Ссылка Telegram сохранена'
+  );
+}
 
-        res.json({
-          success:
-            this.changes > 0
-        });
-      }
-    );
-  }
-);
 
 /* =========================
-   EXCHANGERS / SHOPS
+   SET STATUS
 ========================= */
 
-function addDirectoryItem(
-  table,
-  req,
-  res
-) {
+async function setStatus() {
 
-  const {
-    name,
-    photoUrl,
-    telegramUrl,
-    description,
-    owner,
-    can_post,
-    can_ads
-  } = req.body;
+  await api(
+    '/api/admin/set-status',
+    {
+      method: 'POST',
 
-  const ownerName =
-    cleanUsername(owner);
+      headers: {
+        'Content-Type':
+          'application/json'
+      },
 
-  if (ownerName) {
-    ensureUser(
-      ownerName,
-      'user',
-      null,
-      photoUrl || MAIN_IMAGE
-    );
-  }
+      body: JSON.stringify({
 
-  db.run(
-    `
-    INSERT INTO ${table}
-    (
-      name,
-      photoUrl,
-      telegramUrl,
-      description,
-      owner,
-      can_post,
-      can_ads
+        targetUser:
+          $('target').value,
+
+        newStatus:
+          $('status').value
+
+      })
+    }
+  );
+
+
+  alert(
+    'Статус пользователя изменён'
+  );
+
+
+  await loadAdmin();
+}
+
+
+/* =========================
+   ADD DIRECTORY
+========================= */
+
+async function addDir() {
+
+  const type =
+    $('dtype').value;
+
+
+  const url =
+    type === 'exchanger'
+      ? '/api/admin/add-exchanger'
+      : '/api/admin/add-shop';
+
+
+  await api(
+    url,
+    {
+      method: 'POST',
+
+      headers: {
+        'Content-Type':
+          'application/json'
+      },
+
+      body: JSON.stringify({
+
+        name:
+          $('dn').value,
+
+        telegramUrl:
+          $('du').value,
+
+        owner:
+          $('do').value,
+
+        description:
+          $('dd').value,
+
+        can_ads:
+          $('da').checked
+
+      })
+    }
+  );
+
+
+  alert(
+    'Добавлено'
+  );
+
+
+  $('dn').value = '';
+  $('du').value = '';
+  $('do').value = '';
+  $('dd').value = '';
+  $('da').checked = false;
+
+
+  await loadDir(
+    type === 'ex'
+      ? 'ex'
+      : 'shops'
+  );
+}
+
+
+/* =========================
+   COPY REF
+========================= */
+
+function copyRef() {
+
+  navigator.clipboard
+    .writeText(
+      $('ref').value
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    `,
-    [
-      name,
-      photoUrl || MAIN_IMAGE,
-      telegramUrl,
-      description,
-      ownerName,
-      can_post ? 1 : 0,
-      can_ads ? 1 : 0
-    ],
-    err => {
+    .then(() => {
 
-      if (err) {
-        return res
-          .status(500)
-          .json({
-            error: err.message
-          });
-      }
+      alert(
+        'Реферальная ссылка скопирована'
+      );
 
-      res.json({
-        success: true
-      });
-    }
-  );
+    });
 }
 
-function editDirectoryItem(
-  table,
-  req,
-  res
-) {
 
-  const {
-    id,
-    name,
-    photoUrl,
-    telegramUrl,
-    description,
-    owner,
-    can_post,
-    can_ads
-  } = req.body;
+/* =========================
+   GAMES
+========================= */
 
-  const ownerName =
-    cleanUsername(owner);
+function rollDice() {
 
-  if (ownerName) {
-    ensureUser(ownerName);
-  }
+  const value =
+    Math.floor(
+      Math.random() * 6
+    ) + 1;
 
-  db.run(
-    `
-    UPDATE ${table}
-    SET
-      name = ?,
-      photoUrl = ?,
-      telegramUrl = ?,
-      description = ?,
-      owner = ?,
-      can_post = ?,
-      can_ads = ?
-    WHERE id = ?
-    `,
-    [
-      name,
-      photoUrl || MAIN_IMAGE,
-      telegramUrl,
-      description,
-      ownerName,
-      can_post ? 1 : 0,
-      can_ads ? 1 : 0,
-      id
-    ],
-    err => {
 
-      if (err) {
-        return res
-          .status(500)
-          .json({
-            error: err.message
-          });
-      }
-
-      res.json({
-        success: true
-      });
-    }
-  );
+  $('dice').textContent =
+    '🎲 ' + value;
 }
 
-for (
-  const table of [
-    'exchangers',
-    'shops'
-  ]
-) {
 
-  const singular =
-    table === 'exchangers'
-      ? 'exchanger'
-      : 'shop';
+function flipCoin() {
 
-  app.get(
-    `/api/${table}`,
-    requireLogin,
-    (req, res) => {
-
-      db.all(
-        `
-        SELECT *
-        FROM ${table}
-        ORDER BY id DESC
-        `,
-        (err, rows) => {
-
-          if (err) {
-            return res
-              .status(500)
-              .json({
-                error: err.message
-              });
-          }
-
-          res.json(rows);
-        }
-      );
-    }
-  );
-
-  app.post(
-    `/api/admin/add-${singular}`,
-    anyAdmin,
-    (req, res) => {
-      addDirectoryItem(
-        table,
-        req,
-        res
-      );
-    }
-  );
-
-  app.post(
-    `/api/admin/edit-${singular}`,
-    anyAdmin,
-    (req, res) => {
-      editDirectoryItem(
-        table,
-        req,
-        res
-      );
-    }
-  );
-
-  app.post(
-    `/api/admin/delete-${singular}`,
-    anyAdmin,
-    (req, res) => {
-
-      db.run(
-        `
-        DELETE FROM ${table}
-        WHERE id = ?
-        `,
-        [req.body.id],
-        err => {
-
-          if (err) {
-            return res
-              .status(500)
-              .json({
-                error: err.message
-              });
-          }
-
-          res.json({
-            success: true
-          });
-        }
-      );
-    }
-  );
+  $('coin').textContent =
+    Math.random() < .5
+      ? '🦅 Орёл'
+      : '🪙 Решка';
 }
 
-/* =========================
-   COMPLAINTS
-========================= */
 
-app.post(
-  '/api/complaint',
-  requireLogin,
-  (req, res) => {
+function spin() {
 
-    const {
-      target_type,
-      target_name,
-      reason
-    } = req.body;
+  const symbols = [
+    '🍒',
+    '🍋',
+    '⭐',
+    '💎',
+    '7️⃣'
+  ];
 
-    db.run(
-      `
-      INSERT INTO complaints
-      (
-        target_type,
-        target_name,
-        complainant,
-        reason
-      )
-      VALUES (?, ?, ?, ?)
-      `,
-      [
-        target_type,
-        target_name,
-        req.session.username,
-        reason
-      ],
-      err => {
 
-        if (err) {
-          return res
-            .status(500)
-            .json({
-              error: err.message
-            });
-        }
-
-        res.json({
-          success: true
-        });
-      }
-    );
-  }
-);
-
-/* =========================
-   MAIN PAGE
-========================= */
-
-app.get('/', (req, res) => {
-
-  res.sendFile(
-    path.join(
-      __dirname,
-      'public',
-      'index.html'
-    )
-  );
-});
-
-/* =========================
-   SOCKET.IO CHAT
-========================= */
-
-io.on('connection', socket => {
-
-  const username =
-    cleanUsername(
-      socket.request.session?.username
-    );
-
-  if (!username) {
-    return socket.disconnect(true);
-  }
-
-  socket.join(
-    `user:${username.toLowerCase()}`
-  );
-
-  /* CHAT HISTORY */
-
-  db.all(
-    `
-    SELECT
-      m.*,
-
-      COALESCE(
-        (
-          SELECT COUNT(*)
-          FROM message_likes l
-          WHERE l.messageId = m.id
-        ),
-        0
-      ) AS likeCount,
-
-      EXISTS(
-        SELECT 1
-        FROM message_likes l2
-        WHERE
-          l2.messageId = m.id
-          AND l2.username = ?
-      ) AS liked
-
-    FROM messages m
-    ORDER BY m.id DESC
-    LIMIT 100
-    `,
-    [username],
-    (err, rows) => {
-
-      if (!err) {
-        socket.emit(
-          'chat_history',
-          rows.reverse()
-        );
-      }
-    }
-  );
-
-  /* =========================
-     SEND MESSAGE
-  ========================= */
-
-  socket.on(
-    'chat_message',
-    (data, ack) => {
-
-      const text =
-        String(data.text || '')
-          .slice(0, 5000);
-
-      if (
-        !text &&
-        !data.mediaUrl
-      ) {
-        return;
-      }
-
-      const isAd =
-        data.isAd ? 1 : 0;
-
-      const category =
-        [
-          'chat',
-          'ad',
-          'game'
-        ].includes(data.category)
-          ? data.category
-          : 'chat';
-
-      const pinned =
-        data.isPinned ? 1 : 0;
-
-      const replyTo =
-        Number(data.replyTo) || null;
-
-      db.get(
-        `
-        SELECT avatarUrl
-        FROM users
-        WHERE username = ?
-        `,
-        [username],
-        (err, user) => {
-
-          const avatar =
-            user?.avatarUrl ||
-            MAIN_IMAGE;
-
-          db.run(
-            `
-            INSERT INTO messages
-            (
-              username,
-              avatarUrl,
-              text,
-              mediaUrl,
-              mediaType,
-              isAd,
-              isPinned,
-              replyTo,
-              category
+  const result =
+    [0,1,2]
+      .map(
+        () =>
+          symbols[
+            Math.floor(
+              Math.random() *
+              symbols.length
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `,
-            [
-              username,
-              avatar,
-              text,
-              data.mediaUrl || null,
-              data.mediaType || null,
-              isAd,
-              pinned,
-              replyTo,
-              category
-            ],
-            function (insertError) {
+          ]
+      )
+      .join(' • ');
 
-              if (insertError) {
 
-                if (ack) {
-                  ack({
-                    error:
-                      insertError.message
-                  });
-                }
+  $('slots').textContent =
+    result;
+}
 
-                return;
-              }
-
-              const id =
-                this.lastID;
-
-              if (pinned) {
-                db.run(
-                  `
-                  UPDATE messages
-                  SET isPinned = 0
-                  WHERE id <> ?
-                  `,
-                  [id]
-                );
-              }
-
-              const message = {
-                id,
-                username,
-                avatarUrl: avatar,
-                text,
-                mediaUrl:
-                  data.mediaUrl || null,
-                mediaType:
-                  data.mediaType || null,
-                isAd,
-                isPinned: pinned,
-                replyTo,
-                category,
-                likeCount: 0,
-                liked: false,
-                timestamp:
-                  new Date()
-              };
-
-              io.emit(
-                'new_message',
-                message
-              );
-
-              if (pinned) {
-                io.emit(
-                  'message_pinned',
-                  message
-                );
-              }
-
-              handleMentions(
-                id,
-                text,
-                username
-              );
-
-              if (ack) {
-                ack({
-                  success: true,
-                  id
-                });
-              }
-            }
-          );
-        }
-      );
-    }
-  );
-
-  /* =========================
-     EDIT
-  ========================= */
-
-  socket.on(
-    'edit_message',
-    data => {
-
-      const id =
-        Number(data.id);
-
-      const text =
-        String(data.text || '')
-          .slice(0, 5000);
-
-      db.get(
-        `
-        SELECT username
-        FROM messages
-        WHERE id = ?
-        `,
-        [id],
-        (err, message) => {
-
-          if (!message) return;
-
-          if (
-            message.username !== username &&
-            !isMainAdmin(username)
-          ) {
-            return;
-          }
-
-          db.run(
-            `
-            UPDATE messages
-            SET text = ?
-            WHERE id = ?
-            `,
-            [text, id],
-            updateError => {
-
-              if (updateError) return;
-
-              io.emit(
-                'message_updated',
-                {
-                  id,
-                  text
-                }
-              );
-
-              handleMentions(
-                id,
-                text,
-                username
-              );
-            }
-          );
-        }
-      );
-    }
-  );
-
-  /* =========================
-     DELETE
-  ========================= */
-
-  socket.on(
-    'delete_message',
-    data => {
-
-      const id =
-        Number(data.id);
-
-      db.get(
-        `
-        SELECT username
-        FROM messages
-        WHERE id = ?
-        `,
-        [id],
-        (err, message) => {
-
-          if (!message) return;
-
-          if (
-            message.username !== username &&
-            !isMainAdmin(username)
-          ) {
-            return;
-          }
-
-          db.run(
-            `
-            DELETE FROM messages
-            WHERE id = ?
-            `,
-            [id],
-            () => {
-
-              io.emit(
-                'message_deleted',
-                {
-                  id
-                }
-              );
-            }
-          );
-        }
-      );
-    }
-  );
-
-  /* =========================
-     LIKE
-  ========================= */
-
-  socket.on(
-    'like_message',
-    data => {
-
-      const id =
-        Number(data.id);
-
-      db.run(
-        `
-        INSERT OR IGNORE INTO
-        message_likes
-        (
-          messageId,
-          username
-        )
-        VALUES (?, ?)
-        `,
-        [id, username],
-        function (err) {
-
-          if (err) return;
-
-          if (this.changes === 0) {
-
-            db.run(
-              `
-              DELETE FROM message_likes
-              WHERE
-                messageId = ?
-                AND username = ?
-              `,
-              [id, username]
-            );
-          }
-
-          db.get(
-            `
-            SELECT COUNT(*) count
-            FROM message_likes
-            WHERE messageId = ?
-            `,
-            [id],
-            (e, row) => {
-
-              db.get(
-                `
-                SELECT 1
-                FROM message_likes
-                WHERE
-                  messageId = ?
-                  AND username = ?
-                `,
-                [id, username],
-                (e2, exists) => {
-
-                  io.emit(
-                    'like_updated',
-                    {
-                      messageId: id,
-                      likeCount:
-                        row?.count || 0,
-                      liked:
-                        !!exists
-                    }
-                  );
-                }
-              );
-            }
-          );
-        }
-      );
-    }
-  );
-
-  /* =========================
-     PIN
-  ========================= */
-
-  socket.on(
-    'pin_message',
-    data => {
-
-      if (!isMainAdmin(username)) {
-        return;
-      }
-
-      const id =
-        Number(data.id);
-
-      db.run(
-        `
-        UPDATE messages
-        SET isPinned = 0
-        `,
-        [],
-        () => {
-
-          db.run(
-            `
-            UPDATE messages
-            SET isPinned = 1
-            WHERE id = ?
-            `,
-            [id],
-            () => {
-
-              db.get(
-                `
-                SELECT *
-                FROM messages
-                WHERE id = ?
-                `,
-                [id],
-                (err, message) => {
-
-                  if (message) {
-
-                    io.emit(
-                      'message_pinned',
-                      message
-                    );
-                  }
-                }
-              );
-            }
-          );
-        }
-      );
-    }
-  );
-
-  /* =========================
-     UNPIN
-  ========================= */
-
-  socket.on(
-    'unpin_message',
-    () => {
-
-      if (!isMainAdmin(username)) {
-        return;
-      }
-
-      db.run(
-        `
-        UPDATE messages
-        SET isPinned = 0
-        `,
-        [],
-        () => {
-
-          io.emit(
-            'message_unpinned'
-          );
-        }
-      );
-    }
-  );
-});
 
 /* =========================
-   MENTIONS
+   SOCKET EVENTS
 ========================= */
 
-function handleMentions(
-  messageId,
-  text,
-  byUser
-) {
+socket.on(
+  'chat_history',
+  data => {
 
-  const names = [
-    ...text.matchAll(
-      /@([A-Za-z0-9_\-]{2,64})/g
-    )
-  ]
-    .map(match =>
-      cleanUsername(match[1])
-    )
-    .filter(Boolean);
+    messages = [];
 
-  if (!names.length) {
-    return;
+    $('messages').innerHTML = '';
+
+
+    data.forEach(
+      addMsg
+    );
+
+
+    $('messages').scrollTop =
+      $('messages').scrollHeight;
   }
+);
 
-  const placeholders =
-    names.map(() => '?').join(',');
 
-  db.all(
-    `
-    SELECT username
-    FROM users
-    WHERE lower(username)
-    IN (${placeholders})
-    `,
-    names.map(name =>
-      name.toLowerCase()
-    ),
-    (err, rows) => {
+socket.on(
+  'new_message',
+  message => {
 
-      if (err) return;
+    addMsg(message);
 
-      (rows || []).forEach(user => {
 
-        if (
-          user.username.toLowerCase() ===
-          byUser.toLowerCase()
-        ) {
-          return;
-        }
+    $('messages').scrollTop =
+      $('messages').scrollHeight;
+  }
+);
 
-        db.run(
-          `
-          INSERT INTO mentions
-          (
-            messageId,
-            mentionedUser,
-            byUser
-          )
-          VALUES (?, ?, ?)
-          `,
-          [
-            messageId,
-            user.username,
-            byUser
-          ]
+
+socket.on(
+  'message_updated',
+  data => {
+
+    const message =
+      messages.find(
+        item =>
+          item.id === data.id
+      );
+
+
+    if (message) {
+      message.text =
+        data.text;
+    }
+
+
+    const element =
+      $('m' + data.id);
+
+
+    if (element) {
+
+      const text =
+        element.querySelector(
+          '.text'
         );
 
-        db.run(
-          `
-          INSERT INTO notifications
-          (
-            username,
-            type,
-            messageId,
-            text
-          )
-          VALUES (?, ?, ?, ?)
-          `,
-          [
-            user.username,
-            'mention',
-            messageId,
-            `@${byUser} упомянул вас в чате`
-          ]
-        );
 
-        io.to(
-          `user:${user.username.toLowerCase()}`
-        ).emit(
-          'mention',
-          {
-            messageId,
-            byUser,
-            text:
-              `@${byUser} упомянул вас в чате`
-          }
-        );
-      });
+      if (text) {
+
+        text.innerHTML =
+          renderText(
+            data.text
+          );
+      }
+    }
+  }
+);
+
+
+socket.on(
+  'message_deleted',
+  data => {
+
+    const element =
+      $('m' + data.id);
+
+
+    if (element) {
+      element.remove();
+    }
+  }
+);
+
+
+socket.on(
+  'like_updated',
+  data => {
+
+    const element =
+      $('m' + data.messageId);
+
+
+    if (!element) {
+      return;
+    }
+
+
+    const button =
+      element.querySelector(
+        '.like'
+      );
+
+
+    if (!button) {
+      return;
+    }
+
+
+    const count =
+      button.querySelector(
+        'span'
+      );
+
+
+    if (count) {
+
+      count.textContent =
+        data.likeCount;
+    }
+
+
+    button.classList.toggle(
+      'active',
+      data.liked
+    );
+  }
+);
+
+
+socket.on(
+  'message_pinned',
+  message => {
+
+    showPin(message);
+  }
+);
+
+
+socket.on(
+  'message_unpinned',
+  () => {
+
+    $('pin').style.display =
+      'none';
+  }
+);
+
+
+socket.on(
+  'system_message',
+  async message => {
+
+    addMsg({
+
+      id:
+        'system-' +
+        Date.now(),
+
+      username:
+        'SYSTEM',
+
+      text:
+        message.text,
+
+      timestamp:
+        new Date(),
+
+      likeCount: 0,
+
+      liked: false,
+
+      category:
+        'chat'
+
+    });
+
+
+    const stats =
+      await api(
+        '/api/stats'
+      );
+
+
+    $('count').textContent =
+      stats.totalUsers;
+  }
+);
+
+
+socket.on(
+  'mention',
+  () => {
+
+    loadNotices();
+  }
+);
+
+
+socket.on(
+  'chat_link_updated',
+  data => {
+
+    $('tg').href =
+      data.tgChatLink;
+  }
+);
+
+
+/* =========================
+   ENTER SEND
+========================= */
+
+$('input')
+  .addEventListener(
+    'keydown',
+    event => {
+
+      if (
+        event.key === 'Enter'
+      ) {
+
+        event.preventDefault();
+
+        send();
+      }
     }
   );
-}
+
 
 /* =========================
    START
 ========================= */
 
-server.listen(
-  PORT,
-  () => {
+init()
+  .then(
+    () => loadMessages()
+  )
+  .catch(
+    console.error
+  );
 
-    console.log(
-      `AKIHABARA server running: ` +
-      `http://localhost:${PORT}`
-    );
-  }
-);
+</script>
+
+</body>
+</html>
