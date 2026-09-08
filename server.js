@@ -29,6 +29,15 @@ db.serialize(() => {
     db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl) VALUES ('koliaegorov99po-afk', 'admin', 'https://i.ibb.co/6y4G8s5/265.png')");
 });
 
+app.post('/login', (req, res) => {
+    const username = req.body.username ? req.body.username.trim().replace('@', '') : '';
+    if (!username) return res.redirect('/');
+    req.session.username = username;
+    db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl) VALUES (?, 'user', 'https://i.ibb.co/6y4G8s5/265.png')", [username], () => {
+        res.redirect('/');
+    });
+});
+
 app.get('/api/user', (req, res) => {
     if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
     db.get("SELECT * FROM users WHERE username = ?", [req.session.username], (err, user) => {
@@ -274,6 +283,61 @@ app.get('/', (req, res) => {
                     if (e.key === 'Enter') sendMessage();
                 });
 
+                function appendMessage(msg) {
+                    const box = document.getElementById('messages-box');
+                    const isOwn = currentUser && msg.username === currentUser.username;
+                    const div = document.createElement('div');
+                    div.className = 'msg-card' + (isOwn ? ' own' : '');
+                    div.setAttribute('data-id', msg.id);
+
+                    div.innerHTML = \`
+                        <img src="\${msg.avatarUrl || 'https://i.ibb.co/6y4G8s5/265.png'}" alt="av">
+                        <div class="msg-content">
+                            <div class="msg-info">
+                                <span>@\${msg.username}</span>
+                                <span class="msg-time">\${new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                            </div>
+                            <div class="msg-text">\${msg.text}</div>
+                        </div>
+                        \${isOwn ? \`
+                            <div class="msg-actions">
+                                <button class="msg-action-btn" onclick="startEdit(\${msg.id}, '\${msg.text.replace(/'/g, "\\\\'")}')"><i class="fa-solid fa-pen"></i></button>
+                                <button class="msg-action-btn" onclick="deleteMessage(\${msg.id})"><i class="fa-solid fa-trash"></i></button>
+                            </div>
+                        \` : ''}
+                    \`;
+                    box.appendChild(div);
+                    box.scrollTop = box.scrollHeight;
+                }
+
+                function startEdit(id, text) {
+                    editingMsgId = id;
+                    const input = document.getElementById('msg-input');
+                    input.value = text;
+                    input.focus();
+                }
+
+                function deleteMessage(id) {
+                    socket.emit('delete_message', { id });
+                }
+
+                async function loadExchangers() {
+                    const res = await fetch('/api/exchangers');
+                    const list = await res.json();
+                    const container = document.getElementById('exchangers-list');
+                    container.innerHTML = '';
+                    list.forEach(ex => {
+                        container.innerHTML += \`
+                            <div class="ex-card">
+                                <img src="\${ex.photoUrl}" alt="ex">
+                                <h4>\${ex.name}</h4>
+                                <p>\${ex.description}</p>
+                                <a href="\${ex.telegramUrl}" target="_blank" class="ex-tg-btn"><i class="fa-brands fa-telegram"></i> Перейти</a>
+                            </div>
+                        \`;
+                    });
+                }
+
                 socket.on('chat_history', (messages) => {
                     const box = document.getElementById('messages-box');
                     box.innerHTML = '';
@@ -285,33 +349,51 @@ app.get('/', (req, res) => {
                 });
 
                 socket.on('message_updated', (updated) => {
-                    const el = document.querySelector(`[data-id='${updated.id}'] .msg-text`);
+                    const el = document.querySelector(\`[data-id='\${updated.id}'] .msg-text\`);
                     if (el) el.innerText = updated.text;
                 });
 
                 socket.on('message_deleted', (id) => {
-                    const el = document.querySelector(`[data-id='${id}']`);
+                    const el = document.querySelector(\`[data-id='\${id}']\`);
                     if (el) el.remove();
                 });
+            </script>
+        </body>
+        </html>
+    `);
+});
 
----
+io.on('connection', (socket) => {
+    db.all("SELECT * FROM messages ORDER BY timestamp ASC LIMIT 50", (err, rows) => {
+        if (!err) socket.emit('chat_history', rows);
+    });
 
-А вот обязательный файл **`package.json`**, который должен лежать рядом с `server.js` для правильной установки модулей на сервере Render:
+    socket.on('chat_message', (data) => {
+        const username = socket.handshake.headers.cookie ? 'User' : 'User'; 
+        db.get("SELECT * FROM users LIMIT 1", (err, user) => {
+            const avatar = user ? user.avatarUrl : 'https://i.ibb.co/6y4G8s5/265.png';
+            db.run("INSERT INTO messages (username, avatarUrl, text) VALUES (?, ?, ?)", ['User', avatar, data.text], function(err) {
+                if (!err) {
+                    io.emit('new_message', { id: this.lastID, username: 'User', avatarUrl: avatar, text: data.text, timestamp: new Date() });
+                }
+            });
+        });
+    });
 
-```json
-{
-  "name": "akihabara-platform",
-  "version": "1.0.0",
-  "description": "Cyberpunk platform server",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "body-parser": "^1.20.2",
-    "express": "^4.19.2",
-    "express-session": "^1.18.0",
-    "socket.io": "^4.7.5",
-    "sqlite3": "^5.1.7"
-  }
-}
+    socket.on('edit_message', (data) => {
+        db.run("UPDATE messages SET text = ? WHERE id = ?", [data.text, data.id], (err) => {
+            if (!err) io.emit('message_updated', { id: data.id, text: data.text });
+        });
+    });
+
+    socket.on('delete_message', (data) => {
+        db.run("DELETE FROM messages WHERE id = ?", [data.id], (err) => {
+            if (!err) io.emit('message_deleted', data.id);
+        });
+    });
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    console.log('Server running on port ' + PORT);
+});
