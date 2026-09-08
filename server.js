@@ -44,15 +44,6 @@ app.get('/api/exchangers', (req, res) => {
     });
 });
 
-app.post('/api/exchangers', (req, res) => {
-    if (!req.session.username || req.session.status !== 'admin') return res.status(403).json({ error: 'Forbidden' });
-    const { name, photoUrl, telegramUrl, description } = req.body;
-    db.run("INSERT INTO exchangers (name, photoUrl, telegramUrl, description) VALUES (?, ?, ?, ?)", [name, photoUrl, telegramUrl, description], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ id: this.lastID });
-    });
-});
-
 app.get('/', (req, res) => {
     if (!req.session.username) {
         return res.send(`
@@ -105,7 +96,6 @@ app.get('/', (req, res) => {
                 }
                 body::before { content: ""; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.78); z-index: 0; }
 
-                /* Левая боковая панель с кнопками */
                 #sidebar {
                     width: 320px; background: rgba(15, 15, 15, 0.9); backdrop-filter: blur(12px);
                     border-right: 2px solid #ff0055; z-index: 1; display: flex; flex-direction: column; padding: 20px;
@@ -127,7 +117,6 @@ app.get('/', (req, res) => {
                 .ref-box p { font-size: 0.75em; color: #00eaff; margin-bottom: 5px; }
                 .ref-link-field { background: #000; padding: 6px; border-radius: 4px; font-size: 0.7em; color: #aaa; word-break: break-all; }
 
-                /* Центральная область */
                 #content-area { flex: 1; z-index: 1; display: flex; flex-direction: column; background: rgba(0,0,0,0.4); margin: 15px; border-radius: 10px; border: 1px solid #ff0055; overflow: hidden; }
                 
                 .section { display: none; flex: 1; flex-direction: column; height: 100%; overflow-y: auto; padding: 20px; }
@@ -135,7 +124,6 @@ app.get('/', (req, res) => {
 
                 .section-header { font-size: 1.4em; color: #00eaff; margin-bottom: 20px; border-bottom: 1px solid #333; padding-bottom: 10px; text-shadow: 0 0 8px rgba(0,234,255,0.4); }
 
-                /* Чат */
                 #messages-box { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-bottom: 10px; }
                 .msg-card { display: flex; gap: 12px; max-width: 75%; background: rgba(25,25,25,0.8); padding: 10px 14px; border-radius: 8px; border: 1px solid #333; position: relative; }
                 .msg-card.own { align-self: flex-end; background: rgba(255, 0, 85, 0.15); border-color: #ff0055; flex-direction: row-reverse; }
@@ -156,13 +144,11 @@ app.get('/', (req, res) => {
                 .action-icon-btn { background: #222; border: 1px solid #444; color: #00eaff; padding: 0 15px; border-radius: 6px; cursor: pointer; font-size: 1.2em; transition: 0.3s; }
                 .action-icon-btn:hover { background: #ff0055; color: #fff; border-color: #ff0055; }
 
-                /* Панель эмодзи */
                 #emoji-picker { display: none; position: absolute; bottom: 70px; right: 60px; background: #111; border: 1px solid #ff0055; border-radius: 8px; padding: 10px; grid-template-columns: repeat(6, 1fr); gap: 6px; z-index: 10; box-shadow: 0 0 15px rgba(0,0,0,0.8); }
                 #emoji-picker.open { display: grid; }
                 .emoji-opt { font-size: 1.3em; cursor: pointer; text-align: center; padding: 4px; border-radius: 4px; }
                 .emoji-opt:hover { background: rgba(255,0,85,0.3); }
 
-                /* Обменники с фото и Telegram */
                 .exchangers-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 15px; }
                 .ex-card { background: rgba(20,20,20,0.85); border: 1px solid #333; border-radius: 8px; padding: 15px; text-align: center; transition: 0.3s; text-decoration: none; color: inherit; display: block; }
                 .ex-card:hover { border-color: #00eaff; box-shadow: 0 0 12px rgba(0,234,255,0.3); transform: translateY(-3px); }
@@ -192,7 +178,6 @@ app.get('/', (req, res) => {
             </div>
 
             <div id="content-area">
-                <!-- ЧАТ -->
                 <div id="chat" class="section active">
                     <div class="section-header">Киберпанк Чат & Игры</div>
                     <div id="messages-box"></div>
@@ -218,19 +203,16 @@ app.get('/', (req, res) => {
                     </div>
                 </div>
 
-                <!-- ОБМЕННИКИ -->
                 <div id="exchangers" class="section">
                     <div class="section-header">Проверенные обменники</div>
                     <div class="exchangers-grid" id="exchangers-list"></div>
                 </div>
 
-                <!-- МАГАЗИНЫ -->
                 <div id="shops" class="section">
                     <div class="section-header">Магазины и Сервисы</div>
                     <p style="color: #888;">Раздел магазинов наполняется...</p>
                 </div>
 
-                <!-- ПРОФИЛЬ -->
                 <div id="profile" class="section">
                     <div class="section-header">Настройки профиля</div>
                     <p>Управление вашим аккаунтом, аватаркой и рефералами.</p>
@@ -303,132 +285,33 @@ app.get('/', (req, res) => {
                 });
 
                 socket.on('message_updated', (updated) => {
-                    const el = document.querySelector(\`[data-id='\${updated.id}'] .msg-text\`);
+                    const el = document.querySelector(`[data-id='${updated.id}'] .msg-text`);
                     if (el) el.innerText = updated.text;
                 });
 
                 socket.on('message_deleted', (id) => {
-                    const el = document.querySelector(\`[data-id='\${id}']\`);
+                    const el = document.querySelector(`[data-id='${id}']`);
                     if (el) el.remove();
                 });
 
-                function appendMessage(msg) {
-                    const box = document.getElementById('messages-box');
-                    const isOwn = currentUser && msg.username === currentUser.username;
-                    const isAdmin = currentUser && currentUser.status === 'admin';
+---
 
-                    const div = document.createElement('div');
-                    div.className = \`msg-card \${isOwn ? 'own' : ''}\`;
-                    div.setAttribute('data-id', msg.id);
+А вот обязательный файл **`package.json`**, который должен лежать рядом с `server.js` для правильной установки модулей на сервере Render:
 
-                    let actionsHtml = '';
-                    if (isOwn || isAdmin) {
-                        actionsHtml = \`
-                            <div class="msg-actions">
-                                \${isOwn ? \`<button class="msg-action-btn" onclick="startEdit('\${msg.id}', \` + JSON.stringify(msg.text) + \`)"><i class="fa-solid fa-pen"></i></button>\` : ''}
-                                <button class="msg-action-btn" onclick="deleteMsg('\${msg.id}')"><i class="fa-solid fa-trash"></i></button>
-                            </div>
-                        \`;
-                    }
-
-                    div.innerHTML = \`
-                        <img src="\${msg.avatarUrl || 'https://i.ibb.co/6y4G8s5/265.png'}" alt="av">
-                        <div class="msg-content">
-                            <div class="msg-info">
-                                <span>@\${msg.username}</span>
-                                <span class="msg-time">\${new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
-                            </div>
-                            <div class="msg-text">\escapeHtml(msg.text)\</div>
-                        </div>
-                        \${actionsHtml}
-                    \`;
-                    box.appendChild(div);
-                    box.scrollTop = box.scrollHeight;
-                }
-
-                function escapeHtml(text) {
-                    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-                }
-
-                function startEdit(id, text) {
-                    editingMsgId = id;
-                    const input = document.getElementById('msg-input');
-                    input.value = text;
-                    input.focus();
-                }
-
-                function deleteMsg(id) {
-                    socket.emit('delete_message', id);
-                }
-
-                async function loadExchangers() {
-                    const res = await fetch('/api/exchangers');
-                    const items = await res.json();
-                    const list = document.getElementById('exchangers-list');
-                    list.innerHTML = '';
-                    items.forEach(ex => {
-                        const a = document.createElement('a');
-                        a.className = 'ex-card';
-                        a.href = ex.telegramUrl;
-                        a.target = '_blank';
-                        a.innerHTML = \`
-                            <img src="\${ex.photoUrl || 'https://i.ibb.co/6y4G8s5/265.png'}" alt="logo">
-                            <h4>\${ex.name}</h4>
-                            <p>\${ex.description || 'Надежный обменник'}</p>
-                            <span class="ex-tg-btn"><i class="fa-brands fa-telegram"></i> Написать в Telegram</span>
-                        \`;
-                        list.appendChild(a);
-                    });
-                }
-            </script>
-        </body>
-        </html>
-    `);
-});
-
-app.post('/login', (req, res) => {
-    const username = req.body.username.trim().replace('@', '');
-    if (!username) return res.redirect('/');
-    
-    db.get("SELECT * FROM users WHERE username = ?", [username], (err, user) => {
-        if (!user) {
-            const role = (username === 'koliaegorov99po-afk') ? 'admin' : 'pending';
-            db.run("INSERT INTO users (username, status, avatarUrl) VALUES (?, ?, ?)", [username, role, 'https://i.ibb.co/6y4G8s5/265.png'], () => {
-                req.session.username = username;
-                req.session.status = role;
-                res.redirect('/');
-            });
-        } else {
-            req.session.username = user.username;
-            req.session.status = user.status;
-            res.redirect('/');
-        }
-    });
-});
-
-io.on('connection', (socket) => {
-    db.all("SELECT * FROM messages ORDER BY id DESC LIMIT 50", (err, rows) => {
-        if (!err) socket.emit('chat_history', rows.reverse());
-    });
-
-    socket.on('chat_message', (data) => {
-        // Здесь сессия доступна через socket.request.session (упрощенно транслируем по нику из запроса)
-        // Для стабильности сохраняем через сокет или сессионный контекст
-    });
-
-    socket.on('delete_message', (id) => {
-        db.run("DELETE FROM messages WHERE id = ?", [id], function(err) {
-            if (!err) io.emit('message_deleted', id);
-        });
-    });
-
-    socket.on('edit_message', (data) => {
-        db.run("UPDATE messages SET text = ? WHERE id = ?", [data.text, data.id], function(err) {
-            if (!err) io.emit('message_updated', { id: data.id, text: data.text });
-        });
-    });
-});
-
-server.listen(3000, () => {
-    console.log('Server is running on port 3000');
-});
+```json
+{
+  "name": "akihabara-platform",
+  "version": "1.0.0",
+  "description": "Cyberpunk platform server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "body-parser": "^1.20.2",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "socket.io": "^4.7.5",
+    "sqlite3": "^5.1.7"
+  }
+}
