@@ -27,7 +27,8 @@ app.use(session({
 db.serialize(() => {
     db.run("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, status TEXT, avatarUrl TEXT, referralCode TEXT, invites INTEGER DEFAULT 0)");
     db.run("CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, avatarUrl TEXT, text TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)");
-    db.run("CREATE TABLE IF NOT EXISTS exchangers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, photoUrl TEXT, telegramUrl TEXT, description TEXT)");
+    db.run("CREATE TABLE IF NOT EXISTS exchangers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, photoUrl TEXT, telegramUrl TEXT, description TEXT, owner TEXT, can_post INTEGER DEFAULT 0, can_ads INTEGER DEFAULT 0)");
+    db.run("CREATE TABLE IF NOT EXISTS shops (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, photoUrl TEXT, telegramUrl TEXT, description TEXT, owner TEXT, can_post INTEGER DEFAULT 0, can_ads INTEGER DEFAULT 0)");
     db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl) VALUES ('koliaegorov99po-afk', 'admin', ?)", [MAIN_IMAGE]);
 });
 
@@ -36,7 +37,6 @@ app.post('/login', (req, res) => {
     if (!username) return res.redirect('/');
     req.session.username = username;
     
-    // Проверяем, если это админ, сразу прописываем статус admin в базе
     const role = (username.toLowerCase() === 'koliaegorov99po-afk') ? 'admin' : 'user';
 
     db.run("INSERT INTO users (username, status, avatarUrl) VALUES (?, ?, ?) ON CONFLICT(username) DO UPDATE SET status=?", 
@@ -63,6 +63,42 @@ app.get('/api/exchangers', (req, res) => {
     db.all("SELECT * FROM exchangers", (err, exchangers) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(exchangers);
+    });
+});
+
+app.get('/api/shops', (req, res) => {
+    db.all("SELECT * FROM shops", (err, shops) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(shops);
+    });
+});
+
+// Админ маршруты управления
+app.post('/api/admin/add-exchanger', (req, res) => {
+    if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
+    db.get("SELECT status FROM users WHERE username = ?", [req.session.username], (err, user) => {
+        if (!user || user.status !== 'admin') return res.status(403).json({ error: 'Access denied' });
+        
+        const { name, photoUrl, telegramUrl, description, owner, can_post, can_ads } = req.body;
+        db.run("INSERT INTO exchangers (name, photoUrl, telegramUrl, description, owner, can_post, can_ads) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [name, photoUrl || MAIN_IMAGE, telegramUrl, description, owner, can_post ? 1 : 0, can_ads ? 1 : 0], (err) => {
+                if (err) return res.status(500).json({ error: err.message });
+                res.json({ success: true });
+            });
+    });
+});
+
+app.post('/api/admin/add-shop', (req, res) => {
+    if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
+    db.get("SELECT status FROM users WHERE username = ?", [req.session.username], (err, user) => {
+        if (!user || user.status !== 'admin') return res.status(403).json({ error: 'Access denied' });
+        
+        const { name, photoUrl, telegramUrl, description, owner, can_post, can_ads } = req.body;
+        db.run("INSERT INTO shops (name, photoUrl, telegramUrl, description, owner, can_post, can_ads) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [name, photoUrl || MAIN_IMAGE, telegramUrl, description, owner, can_post ? 1 : 0, can_ads ? 1 : 0], (err) => {
+                if (err) return res.status(500).json({ error: err.message });
+                res.json({ success: true });
+            });
     });
 });
 
@@ -170,12 +206,17 @@ app.get('/', (req, res) => {
                 .emoji-opt { font-size: 1.2em; cursor: pointer; text-align: center; padding: 3px; border-radius: 4px; }
                 .emoji-opt:hover { background: rgba(255,0,85,0.3); }
 
-                .exchangers-grid { display: grid; grid-template-columns: 1fr; gap: 10px; }
-                .ex-card { background: rgba(20,20,20,0.85); border: 1px solid #333; border-radius: 8px; padding: 12px; display: flex; align-items: center; justify-content: space-between; text-decoration: none; color: inherit; }
-                .ex-card:hover { border-color: #00eaff; }
-                .ex-info { display: flex; align-items: center; gap: 12px; }
-                .ex-info img { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; border: 1px solid #ff0055; }
-                .ex-tg-btn { background: #0088cc; color: #fff; padding: 6px 12px; border-radius: 4px; font-size: 0.8em; font-weight: bold; }
+                .exchangers-grid, .shops-grid { display: grid; grid-template-columns: 1fr; gap: 10px; }
+                .ex-card, .shop-card { background: rgba(20,20,20,0.85); border: 1px solid #333; border-radius: 8px; padding: 12px; display: flex; align-items: center; justify-content: space-between; }
+                .ex-card:hover, .shop-card:hover { border-color: #00eaff; }
+                .ex-info, .shop-info { display: flex; align-items: center; gap: 12px; }
+                .ex-info img, .shop-info img { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; border: 1px solid #ff0055; }
+                .ex-tg-btn { background: #0088cc; color: #fff; padding: 6px 12px; border-radius: 4px; font-size: 0.8em; font-weight: bold; text-decoration: none; }
+                
+                .admin-panel { background: rgba(30,0,20,0.9); border: 1px dashed #ff0055; padding: 15px; border-radius: 8px; margin-top: 15px; display: none; text-align: left; }
+                .admin-panel input, .admin-panel textarea { width: 100%; padding: 8px; margin-bottom: 10px; background: #000; border: 1px solid #444; color: #fff; border-radius: 4px; font-size: 0.85em; }
+                .admin-panel label { font-size: 0.8em; color: #00eaff; display: block; margin-bottom: 5px; }
+                .admin-btn { background: #00eaff; color: #000; border: none; padding: 8px 15px; font-weight: bold; border-radius: 4px; cursor: pointer; width: 100%; margin-top: 5px; }
             </style>
         </head>
         <body>
@@ -219,12 +260,12 @@ app.get('/', (req, res) => {
 
                 <div id="shops" class="section-content">
                     <div class="list-box-title">Список доверенных магазинов</div>
-                    <p style="color: #888; text-align: center; margin-top: 20px;">1. Тестовый магазин</p>
+                    <div class="shops-grid" id="shops-list"></div>
                 </div>
 
                 <div id="profile" class="section-content">
                     <div class="list-box-title">Ваш Профиль</div>
-                    <div style="text-align: center; padding: 20px;">
+                    <div style="text-align: center; padding: 15px;">
                         <img src="${MAIN_IMAGE}" style="width: 70px; height: 70px; border-radius: 50%; border: 2px solid #00eaff; object-fit: cover; margin-bottom: 10px;">
                         <h3 id="user-name" style="color: #00eaff;">Загрузка...</h3>
                         <p id="user-role" style="color: #ff0055; font-size: 0.8em; margin-top: 5px;">СТАТУС</p>
@@ -232,6 +273,36 @@ app.get('/', (req, res) => {
                             <p style="font-size: 0.75em; color: #00eaff; margin-bottom: 5px;">Ваша реферальная ссылка:</p>
                             <span id="ref-link" style="font-size: 0.7em; color: #aaa; word-break: break-all;">Загрузка...</span>
                         </div>
+                        
+                        <!-- ПАНЕЛЬ АДМИНА -->
+                        <div id="admin-section" class="admin-panel">
+                            <h4 style="color: #ff0055; margin-bottom: 10px; text-align:center;">Управление сайтом (Админ)</h4>
+                            
+                            <hr style="border-color: #444; margin: 10px 0;">
+                            <p style="color: #00eaff; font-size: 0.85em; margin-bottom: 5px;">Добавить обменник / выдать права</p>
+                            <input type="text" id="ex-name" placeholder="Название обменника">
+                            <input type="text" id="ex-url" placeholder="Ссылка на Telegram (например https://t.me/...)">
+                            <input type="text" id="ex-owner" placeholder="Ник владельца (@username)">
+                            <textarea id="ex-desc" placeholder="Описание / Курс"></textarea>
+                            <div style="text-align:left; margin-bottom:8px;">
+                                <label><input type="checkbox" id="ex-post"> Разрешить посты</label>
+                                <label><input type="checkbox" id="ex-ads"> Разрешить рекламу</label>
+                            </div>
+                            <button class="admin-btn" onclick="addExchanger()">Добавить обменник</button>
+
+                            <hr style="border-color: #444; margin: 15px 0 10px 0;">
+                            <p style="color: #00eaff; font-size: 0.85em; margin-bottom: 5px;">Добавить магазин / выдать права</p>
+                            <input type="text" id="shop-name" placeholder="Название магазина">
+                            <input type="text" id="shop-url" placeholder="Ссылка на Telegram">
+                            <input type="text" id="shop-owner" placeholder="Ник владельца (@username)">
+                            <textarea id="shop-desc" placeholder="Описание магазина"></textarea>
+                            <div style="text-align:left; margin-bottom:8px;">
+                                <label><input type="checkbox" id="shop-post"> Разрешить посты</label>
+                                <label><input type="checkbox" id="shop-ads"> Разрешить рекламу</label>
+                            </div>
+                            <button class="admin-btn" onclick="addShop()">Добавить магазин</button>
+                        </div>
+
                         <a href="/logout" style="display: block; margin-top: 15px; padding: 10px; background: #ff0055; color: #fff; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 0.9em; text-align: center;">Выйти из аккаунта</a>
                     </div>
                 </div>
@@ -249,6 +320,10 @@ app.get('/', (req, res) => {
                         document.getElementById('user-name').innerText = '@' + currentUser.username;
                         document.getElementById('user-role').innerText = currentUser.status.toUpperCase();
                         document.getElementById('ref-link').innerText = window.location.origin + '?ref=' + currentUser.username;
+                        
+                        if (currentUser.status === 'admin') {
+                            document.getElementById('admin-section').style.display = 'block';
+                        }
                     }
                 }
                 loadUserData();
@@ -259,6 +334,7 @@ app.get('/', (req, res) => {
                     document.getElementById(tabId).classList.add('active');
                     el.classList.add('active');
                     if(tabId === 'exchangers') loadExchangers();
+                    if(tabId === 'shops') loadShops();
                 }
 
                 function toggleEmojiPicker() {
@@ -309,23 +385,110 @@ app.get('/', (req, res) => {
                     const container = document.getElementById('exchangers-list');
                     container.innerHTML = '';
                     if(list.length === 0) {
-                        container.innerHTML = '<p style="color:#888; text-align:center;">Обменники скоро появятся</p>';
+                        container.innerHTML = '<p style="color:#888; text-align:center;">Обменники пока не добавлены</p>';
                         return;
                     }
                     list.forEach(ex => {
+                        let badges = '';
+                        if(ex.can_post) badges += '<span style="background:#00eaff;color:#000;font-size:0.6em;padding:2px 5px;border-radius:3px;margin-right:4px;">Посты: ВКЛ</span>';
+                        if(ex.can_ads) badges += '<span style="background:#ff0055;color:#fff;font-size:0.6em;padding:2px 5px;border-radius:3px;">Реклама: ВКЛ</span>';
+
                         container.innerHTML += \`
                             <div class="ex-card">
                                 <div class="ex-info">
-                                    <img src="\${ex.photoUrl}" alt="ex">
+                                    <img src="${MAIN_IMAGE}" alt="ex">
                                     <div>
-                                        <h4 style="color: #00eaff; font-size: 0.95em;">\${ex.name}</h4>
-                                        <p style="font-size: 0.75em; color: #aaa;">\${ex.description}</p>
+                                        <h4 style="color: #00eaff; font-size: 0.95em;">\${ex.name} <span style="font-size:0.7em;color:#aaa;">(Владелец: @\${ex.owner || 'админ'})</span></h4>
+                                        <p style="font-size: 0.75em; color: #aaa; margin: 2px 0;">\${ex.description}</p>
+                                        <div>\${badges}</div>
                                     </div>
                                 </div>
                                 <a href="\${ex.telegramUrl}" target="_blank" class="ex-tg-btn">Перейти</a>
                             </div>
                         \`;
                     });
+                }
+
+                async function loadShops() {
+                    const res = await fetch('/api/shops');
+                    const list = await res.json();
+                    const container = document.getElementById('shops-list');
+                    container.innerHTML = '';
+                    if(list.length === 0) {
+                        container.innerHTML = '<p style="color:#888; text-align:center;">Магазины пока не добавлены</p>';
+                        return;
+                    }
+                    list.forEach(sh => {
+                        let badges = '';
+                        if(sh.can_post) badges += '<span style="background:#00eaff;color:#000;font-size:0.6em;padding:2px 5px;border-radius:3px;margin-right:4px;">Посты: ВКЛ</span>';
+                        if(sh.can_ads) badges += '<span style="background:#ff0055;color:#fff;font-size:0.6em;padding:2px 5px;border-radius:3px;">Реклама: ВКЛ</span>';
+
+                        container.innerHTML += \`
+                            <div class="shop-card">
+                                <div class="shop-info">
+                                    <img src="${MAIN_IMAGE}" alt="shop">
+                                    <div>
+                                        <h4 style="color: #00eaff; font-size: 0.95em;">\${sh.name} <span style="font-size:0.7em;color:#aaa;">(Владелец: @\${sh.owner || 'админ'})</span></h4>
+                                        <p style="font-size: 0.75em; color: #aaa; margin: 2px 0;">\${sh.description}</p>
+                                        <div>\${badges}</div>
+                                    </div>
+                                </div>
+                                <a href="\${sh.telegramUrl}" target="_blank" class="ex-tg-btn">Перейти</a>
+                            </div>
+                        \`;
+                    });
+                }
+
+                async function addExchanger() {
+                    const data = {
+                        name: document.getElementById('ex-name').value,
+                        telegramUrl: document.getElementById('ex-url').value,
+                        owner: document.getElementById('ex-owner').value.replace('@',''),
+                        description: document.getElementById('ex-desc').value,
+                        can_post: document.getElementById('ex-post').checked,
+                        can_ads: document.getElementById('ex-ads').checked
+                    };
+                    const res = await fetch('/api/admin/add-exchanger', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(data)
+                    });
+                    if(res.ok) {
+                        alert('Обменник успешно добавлен!');
+                        loadExchangers();
+                        document.getElementById('ex-name').value = '';
+                        document.getElementById('ex-url').value = '';
+                        document.getElementById('ex-owner').value = '';
+                        document.getElementById('ex-desc').value = '';
+                    } else {
+                        alert('Ошибка добавления');
+                    }
+                }
+
+                async function addShop() {
+                    const data = {
+                        name: document.getElementById('shop-name').value,
+                        telegramUrl: document.getElementById('shop-url').value,
+                        owner: document.getElementById('shop-owner').value.replace('@',''),
+                        description: document.getElementById('shop-desc').value,
+                        can_post: document.getElementById('shop-post').checked,
+                        can_ads: document.getElementById('shop-ads').checked
+                    };
+                    const res = await fetch('/api/admin/add-shop', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(data)
+                    });
+                    if(res.ok) {
+                        alert('Магазин успешно добавлен!');
+                        loadShops();
+                        document.getElementById('shop-name').value = '';
+                        document.getElementById('shop-url').value = '';
+                        document.getElementById('shop-owner').value = '';
+                        document.getElementById('shop-desc').value = '';
+                    } else {
+                        alert('Ошибка добавления');
+                    }
                 }
 
                 socket.on('chat_history', (messages) => {
