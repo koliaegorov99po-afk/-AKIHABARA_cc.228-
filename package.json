@@ -1,16 +1,18 @@
 {
   "name": "akihabara-platform",
   "version": "1.0.0",
-  "description": "Cyberpunk platform server",
+  "description": "AKIHABARA P2P Platform",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "body-parser": "^1.20.2",
     "express": "^4.19.2",
     "express-session": "^1.18.0",
     "socket.io": "^4.7.5",
     "sqlite3": "^5.1.7"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
