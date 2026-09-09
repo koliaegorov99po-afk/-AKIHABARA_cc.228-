@@ -1,4 +1,4 @@
-Const express = require("express");
+const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const sqlite3 = require("sqlite3").verbose();
@@ -1598,7 +1598,6 @@ textarea {
 <button class="tab" onclick="switchTab('profile',this)">👤 ПРОФИЛЬ</button>
 </div>
 
-<!-- CHAT -->
 <section id="chat" class="page active">
 <div class="chat">
 <div class="messages" id="messages"></div>
@@ -1629,19 +1628,16 @@ textarea {
 </div>
 </section>
 
-<!-- EXCHANGERS -->
 <section id="exchangers" class="page">
 <h2>💱 Обменники</h2>
 <div id="exchangersList" class="cards"></div>
 </section>
 
-<!-- SHOPS -->
 <section id="shops" class="page">
 <h2>🏪 Магазины</h2>
 <div id="shopsList" class="cards"></div>
 </section>
 
-<!-- PROFILE -->
 <section id="profile" class="page">
 <div class="profile">
 <h2>👤 Профиль</h2>
@@ -1668,7 +1664,6 @@ textarea {
 </div>
 </div>
 
-<!-- ADMIN -->
 <div id="adminPanel" class="admin" style="display:none">
 <h2>👑 АДМИН-ПАНЕЛЬ</h2>
 <div class="admin-section">
