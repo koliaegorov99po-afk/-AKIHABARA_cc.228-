@@ -34,9 +34,8 @@ io.use((socket, next) => {
 });
 
 db.serialize(() => {
-    db.run("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, status TEXT, avatarUrl TEXT, referralCode TEXT, invitedBy TEXT, invites INTEGER DEFAULT 0, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)");
-    db.run("CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, avatarUrl TEXT, text TEXT, mediaUrl TEXT, mediaType TEXT, isAd INTEGER DEFAULT 0, isPinned INTEGER DEFAULT 0, likes INTEGER DEFAULT 0, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)");
-    db.run("CREATE TABLE IF NOT EXISTS message_likes (id INTEGER PRIMARY KEY AUTOINCREMENT, message_id INTEGER, username TEXT, UNIQUE(message_id, username))");
+    db.run("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, status TEXT, avatarUrl TEXT, referralCode TEXT, invitedBy TEXT, invites INTEGER DEFAULT 0)");
+    db.run("CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, avatarUrl TEXT, text TEXT, mediaUrl TEXT, mediaType TEXT, isAd INTEGER DEFAULT 0, isPinned INTEGER DEFAULT 0, likes INTEGER DEFAULT 0, likedBy TEXT DEFAULT '[]', timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)");
     db.run("CREATE TABLE IF NOT EXISTS exchangers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, photoUrl TEXT, telegramUrl TEXT, description TEXT, owner TEXT, can_post INTEGER DEFAULT 0, can_ads INTEGER DEFAULT 0)");
     db.run("CREATE TABLE IF NOT EXISTS shops (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, photoUrl TEXT, telegramUrl TEXT, description TEXT, owner TEXT, can_post INTEGER DEFAULT 0, can_ads INTEGER DEFAULT 0)");
     db.run("CREATE TABLE IF NOT EXISTS complaints (id INTEGER PRIMARY KEY AUTOINCREMENT, target_type TEXT, target_name TEXT, complainant TEXT, reason TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)");
@@ -50,7 +49,7 @@ app.post('/login', (req, res) => {
     const ref = req.body.ref ? req.body.ref.trim().replace('@', '') : null;
     if (!username) return res.redirect('/');
     req.session.username = username;
-    
+
     const role = (username.toLowerCase() === 'koliaegorov99po-afk') ? 'admin' : 'user';
 
     db.get("SELECT * FROM users WHERE username = ?", [username], (err, existingUser) => {
@@ -74,8 +73,8 @@ app.post('/login', (req, res) => {
 });
 
 function saveUser(username, role, invitedBy, res) {
-    db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl, invitedBy) VALUES (?, ?, ?, ?)", 
-        [username, role, MAIN_IMAGE, invitedBy], () => {
+    db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl, invitedBy) VALUES (?, ?, ?, ?)",
+    [username, role, MAIN_IMAGE, invitedBy], () => {
         io.emit('system_message', { text: `🎉 Пользователь @${username} присоединился к платформе!` });
         res.redirect('/');
     });
@@ -136,7 +135,7 @@ app.get('/api/admin/data', (req, res) => {
     if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
     db.get("SELECT status, username FROM users WHERE username = ?", [req.session.username], (err, user) => {
         if (!user || user.status !== 'admin') return res.status(403).json({ error: 'Access denied' });
-        
+
         db.all("SELECT username, status, invitedBy, invites FROM users", (err, users) => {
             db.all("SELECT * FROM complaints ORDER BY timestamp DESC", (err, complaints) => {
                 db.all("SELECT * FROM exchangers", (err, exchangers) => {
@@ -173,7 +172,7 @@ app.post('/api/admin/delete-user', (req, res) => {
         }
         const { targetUser } = req.body;
         if (targetUser.toLowerCase() === 'koliaegorov99po-afk') return res.status(400).json({ error: 'Cannot delete main admin' });
-        
+
         db.run("DELETE FROM users WHERE username = ?", [targetUser], (err) => {
             if (err) return res.status(500).json({ error: err.message });
             res.json({ success: true });
@@ -185,34 +184,30 @@ app.post('/api/complaint', (req, res) => {
     if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
     const { target_type, target_name, reason } = req.body;
     db.run("INSERT INTO complaints (target_type, target_name, complainant, reason) VALUES (?, ?, ?, ?)",
-        [target_type, target_name, req.session.username, reason], (err) => {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ success: true });
-        });
-});
-
-// Функция регистрации владельца обменника/магазина в системной таблице пользователей, если его там еще нет
-function ensureOwnerRegistered(ownerUsername) {
-    if (!ownerUsername) return;
-    const cleanOwner = ownerUsername.trim().replace('@', '');
-    if (!cleanOwner) return;
-    db.get("SELECT username FROM users WHERE username = ?", [cleanOwner], (err, row) => {
-        if (!row) {
-            db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl) VALUES (?, 'user', ?)", [cleanOwner, MAIN_IMAGE]);
-        }
+    [target_type, target_name, req.session.username, reason], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ success: true });
     });
-}
+});
 
 app.post('/api/admin/add-exchanger', (req, res) => {
     if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
     db.get("SELECT status FROM users WHERE username = ?", [req.session.username], (err, user) => {
         if (!user || user.status !== 'admin') return res.status(403).json({ error: 'Access denied' });
-        
+
         const { name, photoUrl, telegramUrl, description, owner, can_post, can_ads } = req.body;
-        ensureOwnerRegistered(owner);
+        const cleanOwner = owner ? owner.replace('@', '').trim() : null;
+
         db.run("INSERT INTO exchangers (name, photoUrl, telegramUrl, description, owner, can_post, can_ads) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [name, photoUrl || MAIN_IMAGE, telegramUrl, description, owner ? owner.replace('@','') : '', can_post ? 1 : 0, can_ads ? 1 : 0], (err) => {
+            [name, photoUrl || MAIN_IMAGE, telegramUrl, description, cleanOwner, can_post ? 1 : 0, can_ads ? 1 : 0], (err) => {
                 if (err) return res.status(500).json({ error: err.message });
+                if (cleanOwner) {
+                    db.get("SELECT * FROM users WHERE username = ?", [cleanOwner], (err, uRow) => {
+                        if (!uRow) {
+                            db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl) VALUES (?, 'user', ?)", [cleanOwner, MAIN_IMAGE]);
+                        }
+                    });
+                }
                 res.json({ success: true });
             });
     });
@@ -222,12 +217,20 @@ app.post('/api/admin/edit-exchanger', (req, res) => {
     if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
     db.get("SELECT status FROM users WHERE username = ?", [req.session.username], (err, user) => {
         if (!user || user.status !== 'admin') return res.status(403).json({ error: 'Access denied' });
-        
+
         const { id, name, photoUrl, telegramUrl, description, owner, can_post, can_ads } = req.body;
-        ensureOwnerRegistered(owner);
+        const cleanOwner = owner ? owner.replace('@', '').trim() : null;
+
         db.run("UPDATE exchangers SET name = ?, photoUrl = ?, telegramUrl = ?, description = ?, owner = ?, can_post = ?, can_ads = ? WHERE id = ?",
-            [name, photoUrl || MAIN_IMAGE, telegramUrl, description, owner ? owner.replace('@','') : '', can_post ? 1 : 0, can_ads ? 1 : 0, id], (err) => {
+            [name, photoUrl || MAIN_IMAGE, telegramUrl, description, cleanOwner, can_post ? 1 : 0, can_ads ? 1 : 0, id], (err) => {
                 if (err) return res.status(500).json({ error: err.message });
+                if (cleanOwner) {
+                    db.get("SELECT * FROM users WHERE username = ?", [cleanOwner], (err, uRow) => {
+                        if (!uRow) {
+                            db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl) VALUES (?, 'user', ?)", [cleanOwner, MAIN_IMAGE]);
+                        }
+                    });
+                }
                 res.json({ success: true });
             });
     });
@@ -249,12 +252,20 @@ app.post('/api/admin/add-shop', (req, res) => {
     if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
     db.get("SELECT status FROM users WHERE username = ?", [req.session.username], (err, user) => {
         if (!user || user.status !== 'admin') return res.status(403).json({ error: 'Access denied' });
-        
+
         const { name, photoUrl, telegramUrl, description, owner, can_post, can_ads } = req.body;
-        ensureOwnerRegistered(owner);
+        const cleanOwner = owner ? owner.replace('@', '').trim() : null;
+
         db.run("INSERT INTO shops (name, photoUrl, telegramUrl, description, owner, can_post, can_ads) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [name, photoUrl || MAIN_IMAGE, telegramUrl, description, owner ? owner.replace('@','') : '', can_post ? 1 : 0, can_ads ? 1 : 0], (err) => {
+            [name, photoUrl || MAIN_IMAGE, telegramUrl, description, cleanOwner, can_post ? 1 : 0, can_ads ? 1 : 0], (err) => {
                 if (err) return res.status(500).json({ error: err.message });
+                if (cleanOwner) {
+                    db.get("SELECT * FROM users WHERE username = ?", [cleanOwner], (err, uRow) => {
+                        if (!uRow) {
+                            db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl) VALUES (?, 'user', ?)", [cleanOwner, MAIN_IMAGE]);
+                        }
+                    });
+                }
                 res.json({ success: true });
             });
     });
@@ -264,12 +275,20 @@ app.post('/api/admin/edit-shop', (req, res) => {
     if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
     db.get("SELECT status FROM users WHERE username = ?", [req.session.username], (err, user) => {
         if (!user || user.status !== 'admin') return res.status(403).json({ error: 'Access denied' });
-        
+
         const { id, name, photoUrl, telegramUrl, description, owner, can_post, can_ads } = req.body;
-        ensureOwnerRegistered(owner);
+        const cleanOwner = owner ? owner.replace('@', '').trim() : null;
+
         db.run("UPDATE shops SET name = ?, photoUrl = ?, telegramUrl = ?, description = ?, owner = ?, can_post = ?, can_ads = ? WHERE id = ?",
-            [name, photoUrl || MAIN_IMAGE, telegramUrl, description, owner ? owner.replace('@','') : '', can_post ? 1 : 0, can_ads ? 1 : 0, id], (err) => {
+            [name, photoUrl || MAIN_IMAGE, telegramUrl, description, cleanOwner, can_post ? 1 : 0, can_ads ? 1 : 0, id], (err) => {
                 if (err) return res.status(500).json({ error: err.message });
+                if (cleanOwner) {
+                    db.get("SELECT * FROM users WHERE username = ?", [cleanOwner], (err, uRow) => {
+                        if (!uRow) {
+                            db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl) VALUES (?, 'user', ?)", [cleanOwner, MAIN_IMAGE]);
+                        }
+                    });
+                }
                 res.json({ success: true });
             });
     });
@@ -302,28 +321,28 @@ app.get('/', (req, res) => {
             <!DOCTYPE html>
             <html lang="ru">
             <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>$AKIHABARA_cc.228$ - Авторизация</title>
-                <style>
-                    * { box-sizing: border-box; }
-                    body { margin: 0; padding: 20px; background: #000 url('${MAIN_IMAGE}') no-repeat center center fixed; background-size: cover; min-height: 100vh; width: 100vw; display: flex; justify-content: center; align-items: center; font-family: sans-serif; }
-                    body::before { content: ""; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 0; }
-                    .login-box { position: relative; z-index: 1; background: rgba(20,20,20,0.95); padding: 30px; border-radius: 12px; border: 2px solid #ff0055; box-shadow: 0 0 25px #ff0055; text-align: center; width: 90%; max-width: 320px; }
-                    h2 { color: #00eaff; margin-bottom: 20px; text-shadow: 0 0 10px #00eaff; font-size: 1.4em; }
-                    input { width: 100%; padding: 12px; margin-bottom: 20px; background: #000; border: 1px solid #ff0055; color: #00eaff; border-radius: 6px; font-size: 1em; outline: none; }
-                    button { width: 100%; padding: 12px; background: #ff0055; color: #fff; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 1em; }
-                </style>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>$AKIHABARA_cc.228$ - Авторизация</title>
+            <style>
+            * { box-sizing: border-box; }
+            body { margin: 0; padding: 20px; background: #000 url('${MAIN_IMAGE}') no-repeat center center fixed; background-size: cover; min-height: 100vh; width: 100vw; display: flex; justify-content: center; align-items: center; font-family: sans-serif; }
+            body::before { content: ""; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 0; }
+            .login-box { position: relative; z-index: 1; background: rgba(20,20,20,0.95); padding: 30px; border-radius: 12px; border: 2px solid #ff0055; box-shadow: 0 0 25px #ff0055; text-align: center; width: 90%; max-width: 320px; }
+            h2 { color: #00eaff; margin-bottom: 20px; text-shadow: 0 0 10px #00eaff; font-size: 1.4em; }
+            input { width: 100%; padding: 12px; margin-bottom: 20px; background: #000; border: 1px solid #ff0055; color: #00eaff; border-radius: 6px; font-size: 1em; outline: none; }
+            button { width: 100%; padding: 12px; background: #ff0055; color: #fff; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; font-size: 1em; }
+            </style>
             </head>
             <body>
-                <div class="login-box">
-                    <h2>$AKIHABARA$</h2>
-                    <form method="POST" action="/login">
-                        <input type="hidden" name="ref" value="${refParam}">
-                        <input type="text" name="username" placeholder="Ваш Telegram ник" required autocomplete="off">
-                        <button type="submit">Войти</button>
-                    </form>
-                </div>
+            <div class="login-box">
+            <h2>$AKIHABARA$</h2>
+            <form method="POST" action="/login">
+            <input type="hidden" name="ref" value="${refParam}">
+            <input type="text" name="username" placeholder="Ваш Telegram ник" required autocomplete="off">
+            <button type="submit">Войти</button>
+            </form>
+            </div>
             </body>
             </html>
         `);
@@ -335,7 +354,7 @@ app.get('/', (req, res) => {
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>$AKIHABARA_cc.228$ - Telegram Style Platform</title>
+            <title>$AKIHABARA_cc.228$ - Telegram Style Chat</title>
             <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
             <style>
                 * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
@@ -386,38 +405,29 @@ app.get('/', (req, res) => {
 
                 #pinned-banner { background: rgba(0,234,255,0.15); border: 1px solid #00eaff; padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; font-size: 0.85em; display: none; justify-content: space-between; align-items: center; }
 
-                #messages-box { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 10px; background: rgba(5,5,5,0.4); border-radius: 8px; }
-                
-                /* Telegram Style Message Cards */
-                .msg-card { display: flex; gap: 10px; max-width: 82%; background: rgba(25,25,25,0.92); padding: 10px 14px; border-radius: 12px; border: 1px solid #333; position: relative; }
-                .msg-card.own { align-self: flex-end; background: rgba(255, 0, 85, 0.15); border-color: #ff0055; flex-direction: row-reverse; }
+                #messages-box { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 10px; }
+                .msg-card { display: flex; gap: 12px; max-width: 85%; background: rgba(22,22,22,0.9); padding: 10px 14px; border-radius: 10px; border: 1px solid #333; position: relative; }
+                .msg-card.own { align-self: flex-end; background: rgba(255, 0, 85, 0.12); border-color: #ff0055; flex-direction: row-reverse; }
                 .msg-card.system { align-self: center; background: rgba(0,234,255,0.1); border-color: #00eaff; color: #00eaff; font-size: 0.85em; text-align: center; width: 100%; max-width: 100%; justify-content: center; }
-                .msg-card.ad-post { border: 2px dashed #ff0055; background: rgba(35,10,25,0.95); max-width: 92%; width: 100%; }
-                .msg-card img.avatar { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 1px solid #00eaff; flex-shrink: 0; }
+                .msg-card.ad-post { border: 2px dashed #ff0055; background: rgba(40,10,25,0.95); max-width: 92%; width: 100%; }
+                .msg-card img.avatar { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; border: 1px solid #00eaff; flex-shrink: 0; }
                 .msg-content { flex: 1; min-width: 0; }
-                .msg-info { display: flex; justify-content: space-between; font-size: 0.78em; color: #00eaff; margin-bottom: 3px; }
-                .msg-text { font-size: 0.95em; word-break: break-word; line-height: 1.4; color: #f1f1f1; }
-                .msg-text .mention { color: #00eaff; font-weight: bold; background: rgba(0,234,255,0.1); padding: 1px 4px; border-radius: 3px; }
-                .msg-time { font-size: 0.65em; color: #888; margin-left: 6px; }
-                .media-preview { margin-top: 8px; max-width: 100%; max-height: 240px; border-radius: 8px; object-fit: cover; display: block; }
-                
-                .msg-footer-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 5px; }
-                .msg-actions { display: flex; gap: 6px; font-size: 0.75em; }
-                .msg-action-btn { background: #222; border: 1px solid #444; color: #00eaff; padding: 2px 6px; border-radius: 4px; cursor: pointer; }
-                
-                .like-btn { background: rgba(0,0,0,0.5); border: 1px solid #444; color: #ff0055; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; transition: 0.2s; }
-                .like-btn:hover { background: rgba(255,0,85,0.2); }
-                .like-btn.liked { background: #ff0055; color: #fff; border-color: #ff0055; }
+                .msg-info { display: flex; justify-content: space-between; font-size: 0.75em; color: #00eaff; margin-bottom: 4px; }
+                .msg-text { font-size: 0.95em; word-break: break-word; line-height: 1.4; }
+                .msg-time { font-size: 0.65em; color: #777; margin-left: 6px; }
+                .media-preview { margin-top: 8px; max-width: 100%; max-height: 250px; border-radius: 6px; object-fit: cover; display: block; }
+                .msg-actions { margin-top: 6px; display: flex; gap: 6px; font-size: 0.75em; align-items: center; flex-wrap: wrap; }
+                .msg-action-btn { background: #222; border: 1px solid #444; color: #00eaff; padding: 3px 8px; border-radius: 4px; cursor: pointer; }
+                .like-btn { background: rgba(0, 234, 255, 0.1); border: 1px solid #00eaff; color: #00eaff; padding: 2px 8px; border-radius: 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-size: 0.8em; }
+                .like-btn.liked { background: #ff0055; border-color: #ff0055; color: #fff; }
 
-                .chat-input-box { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid #333; position: relative; }
-                .chat-input-row { display: flex; gap: 8px; align-items: center; width: 100%; }
-                .chat-input { flex: 1; background: #000; border: 1px solid #444; padding: 10px 12px; border-radius: 8px; color: #fff; outline: none; font-size: 0.95em; min-width: 0; }
+                .user-mention { background: rgba(0,234,255,0.2); color: #00eaff; padding: 1px 4px; border-radius: 4px; font-weight: bold; }
+
+                .chat-input-box { display: flex; gap: 8px; padding-top: 10px; border-top: 1px solid #333; position: relative; align-items: center; }
+                .chat-input { flex: 1; background: #000; border: 1px solid #444; padding: 12px; border-radius: 8px; color: #fff; outline: none; font-size: 0.95em; min-width: 0; }
                 .action-icon-btn { background: #222; border: 1px solid #444; color: #00eaff; padding: 10px 14px; border-radius: 8px; cursor: pointer; font-size: 1.1em; }
                 
-                .media-upload-hint { font-size: 0.75em; color: #aaa; display: flex; gap: 10px; align-items: center; }
-                .media-upload-hint input { background: #000; border: 1px solid #444; color: #00eaff; padding: 4px; border-radius: 4px; font-size: 0.8em; flex: 1; }
-
-                #emoji-picker { display: none; position: absolute; bottom: 80px; left: 0; width: 320px; background: #111; border: 2px solid #ff0055; border-radius: 10px; padding: 10px; z-index: 10; box-shadow: 0 0 20px rgba(0,0,0,0.9); }
+                #emoji-picker { display: none; position: absolute; bottom: 70px; left: 0; width: 320px; background: #111; border: 2px solid #ff0055; border-radius: 10px; padding: 10px; z-index: 10; box-shadow: 0 0 20px rgba(0,0,0,0.9); }
                 #emoji-picker.open { display: block; }
                 .picker-tabs { display: flex; gap: 5px; margin-bottom: 8px; border-bottom: 1px solid #333; padding-bottom: 5px; }
                 .picker-tab { background: #222; border: none; color: #aaa; padding: 4px 8px; font-size: 0.8em; border-radius: 4px; cursor: pointer; }
@@ -463,24 +473,16 @@ app.get('/', (req, res) => {
                 </div>
 
                 <div id="chat" class="section-content active">
-                    <div class="list-box-title">Telegram Чат (Общение, Игры & Реклама)</div>
+                    <div class="list-box-title">Telegram Чат (Игры, Общещение & Реклама)</div>
                     <div id="pinned-banner">
                         <div>📌 <b>Закреп:</b> <span id="pinned-text-content">...</span></div>
                         <button class="admin-action-btn" id="unpin-btn-top" onclick="unpinCurrentMessage()" style="background:#ff0055;color:#fff;border:none;padding:3px 6px;border-radius:4px;cursor:pointer;display:none;font-size:0.75em;">Открепить</button>
                     </div>
-                    
                     <div id="messages-box"></div>
-                    
                     <div class="chat-input-box">
-                        <div class="media-upload-hint">
-                            <span>📎 Ссылка на медиа (фото/видео к посту):</span>
-                            <input type="text" id="media-url-input" placeholder="https://... (изображение или .mp4)" autocomplete="off">
-                        </div>
-                        <div class="chat-input-row">
-                            <button class="action-icon-btn" onclick="toggleEmojiPicker()"><i class="fa-regular fa-face-smile"></i></button>
-                            <input type="text" id="msg-input" class="chat-input" placeholder="Сообщение или тег @username..." autocomplete="off">
-                            <button class="action-icon-btn" onclick="sendMessage()"><i class="fa-solid fa-paper-plane"></i></button>
-                        </div>
+                        <button class="action-icon-btn" onclick="toggleEmojiPicker()"><i class="fa-regular fa-face-smile"></i></button>
+                        <input type="text" id="msg-input" class="chat-input" placeholder="Введите сообщение или тег @username..." autocomplete="off">
+                        <button class="action-icon-btn" onclick="sendMessage()"><i class="fa-solid fa-paper-plane"></i></button>
                         
                         <div id="emoji-picker">
                             <div class="picker-tabs">
@@ -559,7 +561,7 @@ app.get('/', (req, res) => {
                             <input type="hidden" id="edit-ex-id" value="">
                             <input type="text" id="ex-name" placeholder="Название обменника">
                             <input type="text" id="ex-url" placeholder="Ссылка на Telegram">
-                            <input type="text" id="ex-owner" placeholder="Ник владельца (@username) — будет сохранен">
+                            <input type="text" id="ex-owner" placeholder="Ник владельца (@username)">
                             <textarea id="ex-desc" placeholder="Описание / Курс"></textarea>
                             <div style="text-align:left; margin-bottom:8px;">
                                 <label><input type="checkbox" id="ex-post"> Разрешить посты</label>
@@ -573,7 +575,7 @@ app.get('/', (req, res) => {
                             <input type="hidden" id="edit-shop-id" value="">
                             <input type="text" id="shop-name" placeholder="Название магазина">
                             <input type="text" id="shop-url" placeholder="Ссылка на Telegram">
-                            <input type="text" id="shop-owner" placeholder="Ник владельца (@username) — будет сохранен">
+                            <input type="text" id="shop-owner" placeholder="Ник владельца (@username)">
                             <textarea id="shop-desc" placeholder="Описание магазина"></textarea>
                             <div style="text-align:left; margin-bottom:8px;">
                                 <label><input type="checkbox" id="shop-post"> Разрешить посты</label>
@@ -753,28 +755,12 @@ app.get('/', (req, res) => {
                     input.focus();
                 }
 
-                function formatMentions(text) {
-                    if (!text) return '';
-                    // Подсветка упоминаний вида @username
-                    return text.replace(/(@[a-zA-Z0-9_-]+)/g, '<span class="mention">$1</span>');
-                }
-
                 function sendMessage() {
                     const input = document.getElementById('msg-input');
-                    const mediaInput = document.getElementById('media-url-input');
-                    const text = input.value.trim();
-                    const mediaUrl = mediaInput.value.trim();
-                    
-                    if (!text && !mediaUrl) return;
-
-                    let mediaType = null;
-                    if (mediaUrl) {
-                        mediaType = (mediaUrl.includes('.mp4') || mediaUrl.includes('video')) ? 'video' : 'image';
-                    }
-
-                    socket.emit('chat_message', { text, mediaUrl, mediaType, isAd: false });
+                    let text = input.value.trim();
+                    if (!text) return;
+                    socket.emit('chat_message', { text, isAd: false });
                     input.value = '';
-                    mediaInput.value = '';
                 }
 
                 function sendGif(url) {
@@ -785,16 +771,22 @@ app.get('/', (req, res) => {
                 async function sendAdPost(type, name) {
                     const text = prompt(\`Введите рекламный текст от \${type} "\${name}":\`);
                     if(!text) return;
-                    const mediaUrl = prompt('Укажите ссылку на картинку или видео для заставки рекламного поста:', '');
+                    const mediaUrl = prompt('Укажите прямую ссылку на картинку или видео для поста (можно оставить пустым):', '');
                     const mediaType = mediaUrl && mediaUrl.includes('.mp4') ? 'video' : 'image';
                     
                     socket.emit('chat_message', { text: \`📢 РЕКЛАМА [\${type}]: \${name}\\n\\n\${text}\`, mediaUrl, mediaType, isAd: true });
-                    alert('Рекламный пост с медиа успешно опубликован в чате!');
+                    alert('Рекламный пост с медиафайлом успешно опубликован в чате!');
                 }
 
                 document.getElementById('msg-input').addEventListener('keypress', (e) => {
                     if (e.key === 'Enter') sendMessage();
                 });
+
+                function formatMessageText(text) {
+                    if (!text) return '';
+                    // Парсинг упоминаний вида @username
+                    return text.replace(/@([a-zA-Z0-9_-]+)/g, '<span class="user-mention">@$1</span>');
+                }
 
                 function appendMessage(msg) {
                     const box = document.getElementById('messages-box');
@@ -818,6 +810,16 @@ app.get('/', (req, res) => {
                         }
 
                         let actionsHtml = '';
+                        let likedList = [];
+                        try {
+                            likedList = JSON.parse(msg.likedBy || '[]');
+                        } catch(e){}
+
+                        const isLiked = currentUser && likedList.includes(currentUser.username);
+                        const likeClass = isLiked ? 'like-btn liked' : 'like-btn';
+
+                        actionsHtml += \`<button class="\${likeClass}" onclick="toggleLike(\${msg.id})"><i class="fa-solid fa-thumbs-up"></i> <span id="likes-count-\${msg.id}">\${msg.likes || 0}</span></button>\`;
+
                         if (currentUser && (currentUser.status === 'admin' || isOwn)) {
                             actionsHtml += \`<button class="msg-action-btn" onclick="editMessage(\${msg.id})">Изменить</button>\`;
                         }
@@ -826,9 +828,6 @@ app.get('/', (req, res) => {
                             actionsHtml += \`<button class="msg-action-btn" onclick="togglePinMessage(\${msg.id})">\${pinLabel}</button>\`;
                         }
 
-                        const likesCount = msg.likes || 0;
-                        const likedClass = (msg.userLiked) ? 'liked' : '';
-
                         div.innerHTML = \`
                             <img src="\${msg.avatarUrl || MAIN_IMAGE}" alt="av" class="avatar">
                             <div class="msg-content">
@@ -836,14 +835,9 @@ app.get('/', (req, res) => {
                                     <span>@\${msg.username} \${msg.isAd ? '<b style="color:#ff0055;">[РЕКЛАМА]</b>' : ''}</span>
                                     <span class="msg-time">\${new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
                                 </div>
-                                <div class="msg-text" id="msg-text-\${msg.id}" style="white-space: pre-wrap;">\${formatMentions(msg.text)}</div>
+                                <div class="msg-text" id="msg-text-\${msg.id}" style="white-space: pre-wrap;">\${formatMessageText(msg.text)}</div>
                                 \${mediaHtml}
-                                <div class="msg-footer-actions">
-                                    <div class="msg-actions">\${actionsHtml}</div>
-                                    <button class="like-btn \${likedClass}" id="like-btn-\${msg.id}" onclick="toggleLike(\${msg.id})">
-                                        <i class="fa-solid fa-heart"></i> <span id="like-count-\${msg.id}">\${likesCount}</span>
-                                    </button>
-                                </div>
+                                <div class="msg-actions">\${actionsHtml}</div>
                             </div>
                         \`;
 
@@ -1137,17 +1131,14 @@ app.get('/', (req, res) => {
 
                 socket.on('message_updated', (msg) => {
                     const textEl = document.getElementById('msg-text-' + msg.id);
-                    if(textEl) textEl.innerHTML = formatMentions(msg.text);
+                    if(textEl) textEl.innerHTML = formatMessageText(msg.text);
                 });
 
-                socket.on('like_updated', (data) => {
-                    const countEl = document.getElementById('like-count-' + data.id);
-                    const btnEl = document.getElementById('like-btn-' + data.id);
+                socket.on('message_liked', (data) => {
+                    const countEl = document.getElementById('likes-count-' + data.id);
                     if(countEl) countEl.innerText = data.likes;
-                    if(btnEl && currentUser && data.username === currentUser.username) {
-                        if(data.liked) btnEl.classList.add('liked');
-                        else btnEl.classList.remove('liked');
-                    }
+                    // Перерисовываем кнопку лайка если текущий юзер сменил статус лайка
+                    loadUserData();
                 });
 
                 socket.on('message_pinned', (msg) => {
@@ -1180,12 +1171,7 @@ app.get('/', (req, res) => {
 io.on('connection', (socket) => {
     const sessionUser = socket.request.session && socket.request.session.username ? socket.request.session.username : 'User';
 
-    db.all(`
-        SELECT m.*, 
-        (SELECT COUNT(*) FROM message_likes ml WHERE ml.message_id = m.id) as likes,
-        (SELECT COUNT(*) FROM message_likes ml WHERE ml.message_id = m.id AND ml.username = ?) as userLiked
-        FROM messages m ORDER BY m.timestamp ASC LIMIT 50
-    `, [sessionUser], (err, rows) => {
+    db.all("SELECT * FROM messages ORDER BY timestamp ASC LIMIT 50", (err, rows) => {
         if (!err) socket.emit('chat_history', rows);
     });
 
@@ -1195,7 +1181,7 @@ io.on('connection', (socket) => {
         db.get("SELECT avatarUrl FROM users WHERE username = ?", [sessionUser], (err, row) => {
             const avatar = row && row.avatarUrl ? row.avatarUrl : MAIN_IMAGE;
 
-            db.run("INSERT INTO messages (username, avatarUrl, text, mediaUrl, mediaType, isAd, likes) VALUES (?, ?, ?, ?, ?, ?, 0)", 
+            db.run("INSERT INTO messages (username, avatarUrl, text, mediaUrl, mediaType, isAd, likes, likedBy) VALUES (?, ?, ?, ?, ?, ?, 0, '[]')", 
                 [sessionUser, avatar, data.text, data.mediaUrl || null, data.mediaType || null, isAd], function(err) {
                 if (!err) {
                     io.emit('new_message', { 
@@ -1208,7 +1194,7 @@ io.on('connection', (socket) => {
                         isAd: isAd, 
                         isPinned: 0,
                         likes: 0,
-                        userLiked: false,
+                        likedBy: '[]',
                         timestamp: new Date() 
                     });
                 }
@@ -1217,25 +1203,29 @@ io.on('connection', (socket) => {
     });
 
     socket.on('toggle_like', (data) => {
-        const messageId = data.id;
-        db.get("SELECT * FROM message_likes WHERE message_id = ? AND username = ?", [messageId, sessionUser], (err, existing) => {
-            if (existing) {
-                db.run("DELETE FROM message_likes WHERE message_id = ? AND username = ?", [messageId, sessionUser], () => {
-                    db.get("SELECT COUNT(*) as count FROM message_likes WHERE message_id = ?", [messageId], (err, row) => {
-                        const totalLikes = row ? row.count : 0;
-                        db.run("UPDATE messages SET likes = ? WHERE id = ?", [totalLikes, messageId]);
-                        io.emit('like_updated', { id: messageId, likes: totalLikes, username: sessionUser, liked: false });
-                    });
-                });
+        db.get("SELECT likes, likedBy FROM messages WHERE id = ?", [data.id], (err, msg) => {
+            if (err || !msg) return;
+            let likedBy = [];
+            try {
+                likedBy = JSON.parse(msg.likedBy || '[]');
+            } catch(e) {}
+
+            let likes = msg.likes || 0;
+            const index = likedBy.indexOf(sessionUser);
+
+            if (index > -1) {
+                likedBy.splice(index, 1);
+                likes = Math.max(0, likes - 1);
             } else {
-                db.run("INSERT INTO message_likes (message_id, username) VALUES (?, ?)", [messageId, sessionUser], () => {
-                    db.get("SELECT COUNT(*) as count FROM message_likes WHERE message_id = ?", [messageId], (err, row) => {
-                        const totalLikes = row ? row.count : 0;
-                        db.run("UPDATE messages SET likes = ? WHERE id = ?", [totalLikes, messageId]);
-                        io.emit('like_updated', { id: messageId, likes: totalLikes, username: sessionUser, liked: true });
-                    });
-                });
+                likedBy.push(sessionUser);
+                likes += 1;
             }
+
+            db.run("UPDATE messages SET likes = ?, likedBy = ? WHERE id = ?", [likes, JSON.stringify(likedBy), data.id], (err2) => {
+                if (!err2) {
+                    io.emit('message_liked', { id: data.id, likes });
+                }
+            });
         });
     });
 
