@@ -11,7 +11,9 @@ const server = http.createServer(app);
 const io = new Server(server);
 
 const dbPath = path.join(__dirname, 'akihabara.db');
-const db = new sqlite3.Database(dbPath);
+const db = new sqlite3.Database(dbPath, (err) => {
+    if (err) console.error('Database opening error:', err.message);
+});
 
 const MAIN_IMAGE = '/banner.png';
 
@@ -32,6 +34,17 @@ io.use((socket, next) => {
         next();
     });
 });
+
+function isAdmin(req, res, next) {
+    if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
+    db.get("SELECT status, username FROM users WHERE username = ?", [req.session.username], (err, user) => {
+        if (err || !user || user.status !== 'admin') {
+            return res.status(403).json({ error: 'Access denied: Admins only' });
+        }
+        req.user = user;
+        next();
+    });
+}
 
 db.serialize(() => {
     db.run("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, status TEXT, avatarUrl TEXT, referralCode TEXT, invitedBy TEXT, invites INTEGER DEFAULT 0)");
@@ -76,34 +89,40 @@ app.post('/login', (req, res) => {
         `);
     }
 
-    req.session.username = username;
     const role = (username.toLowerCase() === 'koliaegorov99po-afk') ? 'admin' : 'user';
 
-    db.serialize(() => {
-        db.get("SELECT * FROM users WHERE username = ?", [username], (err, existingUser) => {
-            if (!existingUser) {
-                let actualInvitedBy = null;
-                if (ref && ref !== username) {
-                    db.get("SELECT username FROM users WHERE username = ?", [ref], (err, refUser) => {
-                        if (refUser) {
-                            actualInvitedBy = refUser.username;
-                            db.run("UPDATE users SET invites = invites + 1 WHERE username = ?", [refUser.username]);
-                        }
-                        saveUser(username, role, actualInvitedBy, res);
-                    });
-                } else {
-                    saveUser(username, role, null, res);
-                }
+    db.get("SELECT * FROM users WHERE username = ?", [username], (err, existingUser) => {
+        if (err) {
+            console.error("DB Error on login check:", err.message);
+            return res.redirect('/');
+        }
+        if (!existingUser) {
+            if (ref && ref !== username) {
+                db.get("SELECT username FROM users WHERE username = ?", [ref], (errRef, refUser) => {
+                    let actualInvitedBy = null;
+                    if (!errRef && refUser) {
+                        actualInvitedBy = refUser.username;
+                        db.run("UPDATE users SET invites = invites + 1 WHERE username = ?", [refUser.username], (errUpd) => {
+                            if (errUpd) console.error("Error updating invite count:", errUpd.message);
+                        });
+                    }
+                    saveUser(username, role, actualInvitedBy, req, res);
+                });
             } else {
-                res.redirect('/');
+                saveUser(username, role, null, req, res);
             }
-        });
+        } else {
+            req.session.username = username;
+            res.redirect('/');
+        }
     });
 });
 
-function saveUser(username, role, invitedBy, res) {
+function saveUser(username, role, invitedBy, req, res) {
     db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl, invitedBy) VALUES (?, ?, ?, ?)",
-        [username, role, MAIN_IMAGE, invitedBy], () => {
+        [username, role, MAIN_IMAGE, invitedBy], (err) => {
+            if (err) console.error("Error saving user:", err.message);
+            req.session.username = username;
             io.emit('system_message', { text: `🎉 Участник @${username} присоединился к платформе!` });
             res.redirect('/');
         });
@@ -125,52 +144,67 @@ app.get('/api/user', (req, res) => {
 
 app.get('/api/stats', (req, res) => {
     db.get("SELECT COUNT(*) as count FROM users", (err, row) => {
+        if (err) console.error("Stats count error:", err.message);
         db.get("SELECT value FROM settings WHERE key = 'tg_chat_link'", (err2, settingRow) => {
+            if (err2) console.error("Stats setting error:", err2.message);
             res.json({ totalUsers: row ? row.count : 0, tgChatLink: settingRow ? settingRow.value : 'https://t.me/+K9gPO5PUyttlN2Zi' });
         });
     });
 });
 
-app.post('/api/admin/update-chat-link', (req, res) => {
-    if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
-    db.get("SELECT status, username FROM users WHERE username = ?", [req.session.username], (err, user) => {
-        if (!user || user.status !== 'admin' || user.username.toLowerCase() !== 'koliaegorov99po-afk') {
-            return res.status(403).json({ error: 'Only main admin can update chat link' });
+app.post('/api/admin/update-chat-link', isAdmin, (req, res) => {
+    if (req.user.username.toLowerCase() !== 'koliaegorov99po-afk') {
+        return res.status(403).json({ error: 'Only main admin can update chat link' });
+    }
+    const { tgChatLink } = req.body;
+    db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('tg_chat_link', ?)", [tgChatLink], (err) => {
+        if (err) {
+            console.error("Error updating chat link:", err.message);
+            return res.status(500).json({ error: err.message });
         }
-        const { tgChatLink } = req.body;
-        db.run("INSERT OR REPLACE INTO settings (key, value) VALUES ('tg_chat_link', ?)", [tgChatLink], (err) => {
-            if (err) return res.status(500).json({ error: err.message });
-            io.emit('chat_link_updated', { tgChatLink });
-            res.json({ success: true });
-        });
+        io.emit('chat_link_updated', { tgChatLink });
+        res.json({ success: true });
     });
 });
 
 app.get('/api/exchangers', (req, res) => {
     db.all("SELECT * FROM exchangers", (err, exchangers) => {
-        if (err) return res.status(500).json({ error: err.message });
+        if (err) {
+            console.error("Error fetching exchangers:", err.message);
+            return res.status(500).json({ error: err.message });
+        }
         res.json(exchangers);
     });
 });
 
 app.get('/api/shops', (req, res) => {
     db.all("SELECT * FROM shops", (err, shops) => {
-        if (err) return res.status(500).json({ error: err.message });
+        if (err) {
+            console.error("Error fetching shops:", err.message);
+            return res.status(500).json({ error: err.message });
+        }
         res.json(shops);
     });
 });
 
-app.get('/api/admin/data', (req, res) => {
-    if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
-    db.get("SELECT status, username FROM users WHERE username = ?", [req.session.username], (err, user) => {
-        if (!user || user.status !== 'admin') return res.status(403).json({ error: 'Access denied' });
-
-        db.all("SELECT username, status, invitedBy, invites FROM users", (err, users) => {
-            db.all("SELECT * FROM complaints ORDER BY timestamp DESC", (err, complaints) => {
-                db.all("SELECT * FROM exchangers", (err, exchangers) => {
-                    db.all("SELECT * FROM shops", (err, shops) => {
-                        db.get("SELECT value FROM settings WHERE key = 'tg_chat_link'", (err2, settingRow) => {
-                            res.json({ users, complaints, exchangers, shops, currentAdmin: user.username, tgChatLink: settingRow ? settingRow.value : '' });
+app.get('/api/admin/data', isAdmin, (req, res) => {
+    db.all("SELECT username, status, invitedBy, invites FROM users", (err, users) => {
+        if (err) console.error("Admin data users error:", err.message);
+        db.all("SELECT * FROM complaints ORDER BY timestamp DESC", (errComp, complaints) => {
+            if (errComp) console.error("Admin data complaints error:", errComp.message);
+            db.all("SELECT * FROM exchangers", (errEx, exchangers) => {
+                if (errEx) console.error("Admin data exchangers error:", errEx.message);
+                db.all("SELECT * FROM shops", (errSh, shops) => {
+                    if (errSh) console.error("Admin data shops error:", errSh.message);
+                    db.get("SELECT value FROM settings WHERE key = 'tg_chat_link'", (errSet, settingRow) => {
+                        if (errSet) console.error("Admin data settings error:", errSet.message);
+                        res.json({ 
+                            users: users || [], 
+                            complaints: complaints || [], 
+                            exchangers: exchangers || [], 
+                            shops: shops || [], 
+                            currentAdmin: req.user.username, 
+                            tgChatLink: settingRow ? settingRow.value : '' 
                         });
                     });
                 });
@@ -179,36 +213,30 @@ app.get('/api/admin/data', (req, res) => {
     });
 });
 
-app.post('/api/admin/set-status', (req, res) => {
-    if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
-    db.get("SELECT status, username FROM users WHERE username = ?", [req.session.username], (err, user) => {
-        if (!user || user.status !== 'admin') {
-            return res.status(403).json({ error: 'Access denied' });
+app.post('/api/admin/set-status', isAdmin, (req, res) => {
+    const { targetUser, newStatus } = req.body;
+    if (req.user.username.toLowerCase() !== 'koliaegorov99po-afk' && targetUser.toLowerCase() === 'koliaegorov99po-afk') {
+        return res.status(403).json({ error: 'Cannot modify main admin status' });
+    }
+    db.run("UPDATE users SET status = ? WHERE username = ?", [newStatus, targetUser], (err) => {
+        if (err) {
+            console.error("Error setting status:", err.message);
+            return res.status(500).json({ error: err.message });
         }
-        const { targetUser, newStatus } = req.body;
-        if (user.username.toLowerCase() !== 'koliaegorov99po-afk' && targetUser.toLowerCase() === 'koliaegorov99po-afk') {
-            return res.status(403).json({ error: 'Cannot modify main admin status' });
-        }
-        db.run("UPDATE users SET status = ? WHERE username = ?", [newStatus, targetUser], (err) => {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ success: true });
-        });
+        res.json({ success: true });
     });
 });
 
-app.post('/api/admin/delete-user', (req, res) => {
-    if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
-    db.get("SELECT status, username FROM users WHERE username = ?", [req.session.username], (err, user) => {
-        if (!user || user.status !== 'admin') {
-            return res.status(403).json({ error: 'Access denied' });
-        }
-        const { targetUser } = req.body;
-        if (targetUser.toLowerCase() === 'koliaegorov99po-afk') return res.status(400).json({ error: 'Cannot delete main admin' });
+app.post('/api/admin/delete-user', isAdmin, (req, res) => {
+    const { targetUser } = req.body;
+    if (targetUser.toLowerCase() === 'koliaegorov99po-afk') return res.status(400).json({ error: 'Cannot delete main admin' });
 
-        db.run("DELETE FROM users WHERE username = ?", [targetUser], (err) => {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ success: true });
-        });
+    db.run("DELETE FROM users WHERE username = ?", [targetUser], (err) => {
+        if (err) {
+            console.error("Error deleting user:", err.message);
+            return res.status(500).json({ error: err.message });
+        }
+        res.json({ success: true });
     });
 });
 
@@ -217,148 +245,147 @@ app.post('/api/complaint', (req, res) => {
     const { target_type, target_name, reason } = req.body;
     db.run("INSERT INTO complaints (target_type, target_name, complainant, reason) VALUES (?, ?, ?, ?)",
         [target_type, target_name, req.session.username, reason], (err) => {
-            if (err) return res.status(500).json({ error: err.message });
+            if (err) {
+                console.error("Error adding complaint:", err.message);
+                return res.status(500).json({ error: err.message });
+            }
             res.json({ success: true });
         });
 });
 
-app.post('/api/admin/add-exchanger', (req, res) => {
-    if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
-    db.get("SELECT status FROM users WHERE username = ?", [req.session.username], (err, user) => {
-        if (!user || user.status !== 'admin') return res.status(403).json({ error: 'Access denied' });
-
-        const { name, photoUrl, telegramUrl, description, owner, can_post, can_ads } = req.body;
-        const cleanOwner = owner ? owner.replace('@', '').trim() : '';
-        
-        db.run("INSERT INTO exchangers (name, photoUrl, telegramUrl, description, owner, can_post, can_ads) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [name, photoUrl || MAIN_IMAGE, telegramUrl, description, cleanOwner, can_post ? 1 : 0, can_ads ? 1 : 0], (err) => {
-                if (err) return res.status(500).json({ error: err.message });
-                
-                if (cleanOwner) {
-                    db.get("SELECT * FROM users WHERE username = ?", [cleanOwner], (err, uRow) => {
-                        if (!uRow) {
-                            db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl) VALUES (?, 'user', ?)", [cleanOwner, MAIN_IMAGE]);
-                        }
-                    });
-                }
-                io.emit('exchangers_updated');
-                res.json({ success: true });
-            });
-    });
-});
-
-app.post('/api/admin/edit-exchanger', (req, res) => {
-    if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
-    db.get("SELECT status FROM users WHERE username = ?", [req.session.username], (err, user) => {
-        if (!user || user.status !== 'admin') return res.status(403).json({ error: 'Access denied' });
-
-        const { id, name, photoUrl, telegramUrl, description, owner, can_post, can_ads } = req.body;
-        const cleanOwner = owner ? owner.replace('@', '').trim() : '';
-
-        db.run("UPDATE exchangers SET name = ?, photoUrl = ?, telegramUrl = ?, description = ?, owner = ?, can_post = ?, can_ads = ? WHERE id = ?",
-            [name, photoUrl || MAIN_IMAGE, telegramUrl, description, cleanOwner, can_post ? 1 : 0, can_ads ? 1 : 0, id], (err) => {
-                if (err) return res.status(500).json({ error: err.message });
-                
-                if (cleanOwner) {
-                    db.get("SELECT * FROM users WHERE username = ?", [cleanOwner], (err, uRow) => {
-                        if (!uRow) {
-                            db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl) VALUES (?, 'user', ?)", [cleanOwner, MAIN_IMAGE]);
-                        }
-                    });
-                }
-                io.emit('exchangers_updated');
-                res.json({ success: true });
-            });
-    });
-});
-
-app.post('/api/admin/delete-exchanger', (req, res) => {
-    if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
-    db.get("SELECT status FROM users WHERE username = ?", [req.session.username], (err, user) => {
-        if (!user || user.status !== 'admin') return res.status(403).json({ error: 'Access denied' });
-        const { id } = req.body;
-        db.run("DELETE FROM exchangers WHERE id = ?", [id], (err) => {
-            if (err) return res.status(500).json({ error: err.message });
+app.post('/api/admin/add-exchanger', isAdmin, (req, res) => {
+    const { name, photoUrl, telegramUrl, description, owner, can_post, can_ads } = req.body;
+    const cleanOwner = owner ? owner.replace('@', '').trim() : '';
+    
+    db.run("INSERT INTO exchangers (name, photoUrl, telegramUrl, description, owner, can_post, can_ads) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [name, photoUrl || MAIN_IMAGE, telegramUrl, description, cleanOwner, can_post ? 1 : 0, can_ads ? 1 : 0], (err) => {
+            if (err) {
+                console.error("Error adding exchanger:", err.message);
+                return res.status(500).json({ error: err.message });
+            }
+            
+            if (cleanOwner) {
+                db.get("SELECT * FROM users WHERE username = ?", [cleanOwner], (errU, uRow) => {
+                    if (!uRow) {
+                        db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl) VALUES (?, 'user', ?)", [cleanOwner, MAIN_IMAGE]);
+                    }
+                });
+            }
             io.emit('exchangers_updated');
             res.json({ success: true });
         });
+});
+
+app.post('/api/admin/edit-exchanger', isAdmin, (req, res) => {
+    const { id, name, photoUrl, telegramUrl, description, owner, can_post, can_ads } = req.body;
+    const cleanOwner = owner ? owner.replace('@', '').trim() : '';
+
+    db.run("UPDATE exchangers SET name = ?, photoUrl = ?, telegramUrl = ?, description = ?, owner = ?, can_post = ?, can_ads = ? WHERE id = ?",
+        [name, photoUrl || MAIN_IMAGE, telegramUrl, description, cleanOwner, can_post ? 1 : 0, can_ads ? 1 : 0, id], (err) => {
+            if (err) {
+                console.error("Error editing exchanger:", err.message);
+                return res.status(500).json({ error: err.message });
+            }
+            
+            if (cleanOwner) {
+                db.get("SELECT * FROM users WHERE username = ?", [cleanOwner], (errU, uRow) => {
+                    if (!uRow) {
+                        db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl) VALUES (?, 'user', ?)", [cleanOwner, MAIN_IMAGE]);
+                    }
+                });
+            }
+            io.emit('exchangers_updated');
+            res.json({ success: true });
+        });
+});
+
+app.post('/api/admin/delete-exchanger', isAdmin, (req, res) => {
+    const { id } = req.body;
+    db.run("DELETE FROM exchangers WHERE id = ?", [id], (err) => {
+        if (err) {
+            console.error("Error deleting exchanger:", err.message);
+            return res.status(500).json({ error: err.message });
+        }
+        io.emit('exchangers_updated');
+        res.json({ success: true });
     });
 });
 
-app.post('/api/admin/add-shop', (req, res) => {
-    if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
-    db.get("SELECT status FROM users WHERE username = ?", [req.session.username], (err, user) => {
-        if (!user || user.status !== 'admin') return res.status(403).json({ error: 'Access denied' });
+app.post('/api/admin/add-shop', isAdmin, (req, res) => {
+    const { name, photoUrl, telegramUrl, description, owner, can_post, can_ads } = req.body;
+    const cleanOwner = owner ? owner.replace('@', '').trim() : '';
 
-        const { name, photoUrl, telegramUrl, description, owner, can_post, can_ads } = req.body;
-        const cleanOwner = owner ? owner.replace('@', '').trim() : '';
+    db.run("INSERT INTO shops (name, photoUrl, telegramUrl, description, owner, can_post, can_ads) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [name, photoUrl || MAIN_IMAGE, telegramUrl, description, cleanOwner, can_post ? 1 : 0, can_ads ? 1 : 0], (err) => {
+            if (err) {
+                console.error("Error adding shop:", err.message);
+                return res.status(500).json({ error: err.message });
+            }
 
-        db.run("INSERT INTO shops (name, photoUrl, telegramUrl, description, owner, can_post, can_ads) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [name, photoUrl || MAIN_IMAGE, telegramUrl, description, cleanOwner, can_post ? 1 : 0, can_ads ? 1 : 0], (err) => {
-                if (err) return res.status(500).json({ error: err.message });
-
-                if (cleanOwner) {
-                    db.get("SELECT * FROM users WHERE username = ?", [cleanOwner], (err, uRow) => {
-                        if (!uRow) {
-                            db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl) VALUES (?, 'user', ?)", [cleanOwner, MAIN_IMAGE]);
-                        }
-                    });
-                }
-                io.emit('shops_updated');
-                res.json({ success: true });
-            });
-    });
-});
-
-app.post('/api/admin/edit-shop', (req, res) => {
-    if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
-    db.get("SELECT status FROM users WHERE username = ?", [req.session.username], (err, user) => {
-        if (!user || user.status !== 'admin') return res.status(403).json({ error: 'Access denied' });
-
-        const { id, name, photoUrl, telegramUrl, description, owner, can_post, can_ads } = req.body;
-        const cleanOwner = owner ? owner.replace('@', '').trim() : '';
-
-        db.run("UPDATE shops SET name = ?, photoUrl = ?, telegramUrl = ?, description = ?, owner = ?, can_post = ?, can_ads = ? WHERE id = ?",
-            [name, photoUrl || MAIN_IMAGE, telegramUrl, description, cleanOwner, can_post ? 1 : 0, can_ads ? 1 : 0, id], (err) => {
-                if (err) return res.status(500).json({ error: err.message });
-
-                if (cleanOwner) {
-                    db.get("SELECT * FROM users WHERE username = ?", [cleanOwner], (err, uRow) => {
-                        if (!uRow) {
-                            db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl) VALUES (?, 'user', ?)", [cleanOwner, MAIN_IMAGE]);
-                        }
-                    });
-                }
-                io.emit('shops_updated');
-                res.json({ success: true });
-            });
-    });
-});
-
-app.post('/api/admin/delete-shop', (req, res) => {
-    if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
-    db.get("SELECT status FROM users WHERE username = ?", [req.session.username], (err, user) => {
-        if (!user || user.status !== 'admin') return res.status(403).json({ error: 'Access denied' });
-        const { id } = req.body;
-        db.run("DELETE FROM shops WHERE id = ?", [id], (err) => {
-            if (err) return res.status(500).json({ error: err.message });
+            if (cleanOwner) {
+                db.get("SELECT * FROM users WHERE username = ?", [cleanOwner], (errU, uRow) => {
+                    if (!uRow) {
+                        db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl) VALUES (?, 'user', ?)", [cleanOwner, MAIN_IMAGE]);
+                    }
+                });
+            }
             io.emit('shops_updated');
             res.json({ success: true });
         });
+});
+
+app.post('/api/admin/edit-shop', isAdmin, (req, res) => {
+    const { id, name, photoUrl, telegramUrl, description, owner, can_post, can_ads } = req.body;
+    const cleanOwner = owner ? owner.replace('@', '').trim() : '';
+
+    db.run("UPDATE shops SET name = ?, photoUrl = ?, telegramUrl = ?, description = ?, owner = ?, can_post = ?, can_ads = ? WHERE id = ?",
+        [name, photoUrl || MAIN_IMAGE, telegramUrl, description, cleanOwner, can_post ? 1 : 0, can_ads ? 1 : 0, id], (err) => {
+            if (err) {
+                console.error("Error editing shop:", err.message);
+                return res.status(500).json({ error: err.message });
+            }
+
+            if (cleanOwner) {
+                db.get("SELECT * FROM users WHERE username = ?", [cleanOwner], (errU, uRow) => {
+                    if (!uRow) {
+                        db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl) VALUES (?, 'user', ?)", [cleanOwner, MAIN_IMAGE]);
+                    }
+                });
+            }
+            io.emit('shops_updated');
+            res.json({ success: true });
+        });
+});
+
+app.post('/api/admin/delete-shop', isAdmin, (req, res) => {
+    const { id } = req.body;
+    db.run("DELETE FROM shops WHERE id = ?", [id], (err) => {
+        if (err) {
+            console.error("Error deleting shop:", err.message);
+            return res.status(500).json({ error: err.message });
+        }
+        io.emit('shops_updated');
+        res.json({ success: true });
     });
 });
 
 app.get('/api/referrals', (req, res) => {
     if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
     db.all("SELECT username, status, timestamp FROM users WHERE invitedBy = ?", [req.session.username], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
+        if (err) {
+            console.error("Error fetching referrals:", err.message);
+            return res.status(500).json({ error: err.message });
+        }
         res.json(rows);
     });
 });
 
 app.get('/api/users-list', (req, res) => {
     db.all("SELECT username FROM users", (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
+        if (err) {
+            console.error("Error fetching users list:", err.message);
+            return res.status(500).json({ error: err.message });
+        }
         res.json(rows);
     });
 });
@@ -462,7 +489,6 @@ app.get('/', (req, res) => {
 
                 #pinned-banner { background: rgba(0,234,255,0.15); border: 1px solid #00eaff; padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; font-size: 0.85em; display: none; justify-content: space-between; align-items: center; }
 
-                /* Telegram-style chat layout */
                 #messages-box { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 10px; background: rgba(10,12,16,0.5); border-radius: 8px; border: 1px solid #222; }
                 .msg-card { display: flex; gap: 10px; max-width: 82%; background: #18222d; padding: 8px 12px; border-radius: 12px; border: 1px solid #2b394b; position: relative; color: #e4e6eb; box-shadow: 0 1px 2px rgba(0,0,0,0.3); }
                 .msg-card.own { align-self: flex-end; background: #2b5278; border-color: #3e6d9b; flex-direction: row-reverse; }
@@ -485,7 +511,6 @@ app.get('/', (req, res) => {
                 .like-btn { background: rgba(0,0,0,0.3); border: 1px solid #444; color: #ff0055; padding: 2px 8px; border-radius: 12px; cursor: pointer; font-size: 0.8em; display: inline-flex; align-items: center; gap: 4px; transition: 0.2s; }
                 .like-btn.liked { background: rgba(255,0,85,0.2); border-color: #ff0055; color: #fff; }
 
-                /* Telegram-style interactive input and mention autocomplete dropdown */
                 .chat-input-box { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid #333; position: relative; }
                 .chat-input-row { display: flex; gap: 8px; align-items: center; width: 100%; }
                 .chat-input { flex: 1; background: #17212b; border: 1px solid #2b394b; padding: 12px; border-radius: 10px; color: #fff; outline: none; font-size: 0.95em; min-width: 0; }
@@ -731,7 +756,7 @@ app.get('/', (req, res) => {
                             container.innerHTML = 'У вас пока нет приглашенных рефералов';
                         } else {
                             refs.forEach(r => {
-                                container.innerHTML += \`<div>👤 @\${r.username} (<span style="color:#00eaff;">\${r.status}</span>)</div>\`;
+                                container.innerHTML += `<div>👤 @${r.username} (<span style="color:#00eaff;">${r.status}</span>)</div>`;
                             });
                         }
                     }
@@ -759,7 +784,7 @@ app.get('/', (req, res) => {
                         select.innerHTML = '';
                         data.users.forEach(u => {
                             if(data.currentAdmin.toLowerCase() !== 'koliaegorov99po-afk' && u.username.toLowerCase() === 'koliaegorov99po-afk') return;
-                            select.innerHTML += \`<option value="\${u.username}">@\${u.username} (\${u.status})</option>\`;
+                            select.innerHTML += `<option value="${u.username}">@${u.username} (${u.status})</option>`;
                         });
 
                         const compContainer = document.getElementById('admin-complaints-list');
@@ -768,7 +793,7 @@ app.get('/', (req, res) => {
                             compContainer.innerHTML = 'Нет жалоб';
                         } else {
                             data.complaints.forEach(c => {
-                                compContainer.innerHTML += \`<div style="border-bottom:1px solid #333; margin-bottom:5px; padding-bottom:3px;"><b>[\${c.target_type}] \${c.target_name}</b> от @\${c.complainant}: <span style="color:#ff0055;">\${c.reason}</span></div>\`;
+                                compContainer.innerHTML += `<div style="border-bottom:1px solid #333; margin-bottom:5px; padding-bottom:3px;"><b>[${c.target_type}] ${c.target_name}</b> от @${c.complainant}: <span style="color:#ff0055;">${c.reason}</span></div>`;
                             });
                         }
                     }
@@ -809,7 +834,7 @@ app.get('/', (req, res) => {
 
                 async function deleteUserAccount() {
                     const targetUser = document.getElementById('target-user-select').value;
-                    if(!confirm(\`Вы действительно хотите удалить пользователя @\${targetUser}?\`)) return;
+                    if(!confirm(`Вы действительно хотите удалить пользователя @${targetUser}?`)) return;
                     const res = await fetch('/api/admin/delete-user', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -864,7 +889,7 @@ app.get('/', (req, res) => {
                         if (matches.length > 0) {
                             dropdown.innerHTML = '';
                             matches.forEach(m => {
-                                dropdown.innerHTML += \`<div class="mention-item" onclick="selectMention('\${m.username}')">@\${m.username}</div>\`;
+                                dropdown.innerHTML += `<div class="mention-item" onclick="selectMention('${m.username}')">@${m.username}</div>`;
                             });
                             dropdown.style.display = 'block';
                             return;
@@ -901,12 +926,12 @@ app.get('/', (req, res) => {
                 }
 
                 async function sendAdPost(type, name) {
-                    const text = prompt(\`Введите рекламный текст от \${type} "\${name}":\`);
+                    const text = prompt(`Введите рекламный текст от ${type} "${name}":`);
                     if(!text) return;
                     const mediaUrl = prompt('Укажите ссылку на картинку или видео для рекламного поста:', '');
                     const mediaType = mediaUrl && mediaUrl.includes('.mp4') ? 'video' : 'image';
                     
-                    socket.emit('chat_message', { text: \`📢 РЕКЛАМА [\${type}]: \${name}\\n\\n\${text}\`, mediaUrl: mediaUrl || null, mediaType: mediaUrl ? mediaType : null, isAd: true });
+                    socket.emit('chat_message', { text: `📢 РЕКЛАМА [${type}]: ${name}\n\n${text}`, mediaUrl: mediaUrl || null, mediaType: mediaUrl ? mediaType : null, isAd: true });
                     alert('Рекламный пост успешно опубликован в общем чате!');
                 }
 
@@ -923,15 +948,15 @@ app.get('/', (req, res) => {
                     
                     if (isSystem) {
                         div.className = 'msg-card system';
-                        div.innerHTML = \`<div class="msg-text">\${msg.text}</div>\`;
+                        div.innerHTML = `<div class="msg-text">${msg.text}</div>`;
                     } else {
                         div.className = 'msg-card' + (isOwn ? ' own' : '') + (msg.isAd ? ' ad-post' : '');
                         let mediaHtml = '';
                         if (msg.mediaUrl) {
                             if (msg.mediaType === 'video') {
-                                mediaHtml = \`<video src="\${msg.mediaUrl}" controls class="media-preview"></video>\`;
+                                mediaHtml = `<video src="${msg.mediaUrl}" controls class="media-preview"></video>`;
                             } else {
-                                mediaHtml = \`<img src="\${msg.mediaUrl}" alt="media" class="media-preview">\`;
+                                mediaHtml = `<img src="${msg.mediaUrl}" alt="media" class="media-preview">`;
                             }
                         }
 
@@ -943,34 +968,37 @@ app.get('/', (req, res) => {
                         const hasLiked = currentUser && likesArr.includes(currentUser.username);
                         const likesCount = likesArr.length;
 
-                        let formattedText = msg.text.replace(/(@[a-zA-Z0-9_-]+)/g, '<b style="color:#00eaff;">$1</b>');
+                        const tempDiv = document.createElement('div');
+                        tempDiv.textContent = msg.text;
+                        let safeText = tempDiv.innerHTML;
+                        let formattedText = safeText.replace(/(@[a-zA-Z0-9_-]+)/g, '<b style="color:#00eaff;">$1</b>');
 
                         let actionsHtml = '';
                         if (currentUser && (currentUser.status === 'admin' || isOwn)) {
-                            actionsHtml += \`<button class="msg-action-btn" onclick="editMessage(\${msg.id})">Изменить</button>\`;
+                            actionsHtml += `<button class="msg-action-btn" onclick="editMessage(${msg.id})">Изменить</button>`;
                         }
                         if (currentUser && currentUser.status === 'admin') {
                             const pinLabel = msg.isPinned ? 'Открепить' : 'Закрепить';
-                            actionsHtml += \`<button class="msg-action-btn" onclick="togglePinMessage(\${msg.id})">\${pinLabel}</button>\`;
+                            actionsHtml += `<button class="msg-action-btn" onclick="togglePinMessage(${msg.id})">${pinLabel}</button>`;
                         }
 
-                        div.innerHTML = \`
-                            <img src="\${msg.avatarUrl || MAIN_IMAGE}" alt="av" class="avatar">
+                        div.innerHTML = `
+                            <img src="${msg.avatarUrl || MAIN_IMAGE}" alt="av" class="avatar">
                             <div class="msg-content">
                                 <div class="msg-info">
-                                    <span>@\${msg.username} \${msg.isAd ? '<b style="color:#ff0055;">[РЕКЛАМА]</b>' : ''}</span>
-                                    <span class="msg-time">\${new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                                    <span>@${msg.username} ${msg.isAd ? '<b style="color:#ff0055;">[РЕКЛАМА]</b>' : ''}</span>
+                                    <span class="msg-time">${new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
                                 </div>
-                                <div class="msg-text" id="msg-text-\${msg.id}" style="white-space: pre-wrap;">\${formattedText}</div>
-                                \${mediaHtml}
+                                <div class="msg-text" id="msg-text-${msg.id}" style="white-space: pre-wrap;">${formattedText}</div>
+                                ${mediaHtml}
                                 <div class="msg-footer-bar">
-                                    <div class="msg-actions">\${actionsHtml}</div>
-                                    <button class="like-btn \${hasLiked ? 'liked' : ''}" onclick="toggleLike(\${msg.id})">
-                                        <i class="fa-solid fa-heart"></i> <span id="like-count-\${msg.id}">\${likesCount}</span>
+                                    <div class="msg-actions">${actionsHtml}</div>
+                                    <button class="like-btn ${hasLiked ? 'liked' : ''}" onclick="toggleLike(${msg.id})">
+                                        <i class="fa-solid fa-heart"></i> <span id="like-count-${msg.id}">${likesCount}</span>
                                     </button>
                                 </div>
                             </div>
-                        \`;
+                        `;
 
                         if (msg.isPinned) {
                             document.getElementById('pinned-banner').style.display = 'flex';
@@ -1004,7 +1032,7 @@ app.get('/', (req, res) => {
                 }
 
                 async function sendComplaint(type, name) {
-                    const reason = prompt(\`Укажите причину жалобы на \${type} "\${name}":\`);
+                    const reason = prompt(`Укажите причину жалобы на ${type} "${name}":`);
                     if(!reason) return;
                     const res = await fetch('/api/complaint', {
                         method: 'POST',
@@ -1031,35 +1059,35 @@ app.get('/', (req, res) => {
 
                         let adBtn = '';
                         if(currentUser && (currentUser.status === 'admin' || (ex.can_ads && currentUser.username === ex.owner))) {
-                            adBtn = \`<button class="ad-post-btn" onclick="sendAdPost('Обменник', '\${ex.name}')">Реклама</button>\`;
+                            adBtn = `<button class="ad-post-btn" onclick="sendAdPost('Обменник', '${ex.name}')">Реклама</button>`;
                         }
 
                         let adminTools = '';
                         if(currentUser && currentUser.status === 'admin') {
-                            adminTools = \`
-                                <button class="msg-action-btn" onclick="startEditExchanger(\${ex.id})">Редактировать</button>
-                                <button class="msg-action-btn" style="background:#ff3333;color:#fff;border:none;" onclick="deleteExchanger(\${ex.id})">Удалить</button>
-                            \`;
+                            adminTools = `
+                                <button class="msg-action-btn" onclick="startEditExchanger(${ex.id})">Редактировать</button>
+                                <button class="msg-action-btn" style="background:#ff3333;color:#fff;border:none;" onclick="deleteExchanger(${ex.id})">Удалить</button>
+                            `;
                         }
 
-                        container.innerHTML += \`
+                        container.innerHTML += `
                             <div class="ex-card">
                                 <div class="ex-info">
-                                    <img src="\${ex.photoUrl || MAIN_IMAGE}" alt="ex">
+                                    <img src="${ex.photoUrl || MAIN_IMAGE}" alt="ex">
                                     <div>
-                                        <h4 style="color: #00eaff; font-size: 0.95em;">\${ex.name} <span style="font-size:0.7em;color:#aaa;">(@\${ex.owner || 'админ'})</span></h4>
-                                        <p style="font-size: 0.75em; color: #aaa; margin: 2px 0;">\${ex.description}</p>
-                                        <div>\${badges}</div>
-                                        <div style="margin-top:4px;">\${adminTools}</div>
+                                        <h4 style="color: #00eaff; font-size: 0.95em;">${ex.name} <span style="font-size:0.7em;color:#aaa;">(@${ex.owner || 'админ'})</span></h4>
+                                        <p style="font-size: 0.75em; color: #aaa; margin: 2px 0;">${ex.description}</p>
+                                        <div>${badges}</div>
+                                        <div style="margin-top:4px;">${adminTools}</div>
                                     </div>
                                 </div>
                                 <div class="btn-group">
-                                    \${adBtn}
-                                    <button class="complaint-btn" onclick="sendComplaint('Обменник', '\${ex.name}')">Жалоба</button>
-                                    <a href="\${ex.telegramUrl}" target="_blank" class="ex-tg-btn">Перейти</a>
+                                    ${adBtn}
+                                    <button class="complaint-btn" onclick="sendComplaint('Обменник', '${ex.name}')">Жалоба</button>
+                                    <a href="${ex.telegramUrl}" target="_blank" class="ex-tg-btn">Перейти</a>
                                 </div>
                             </div>
-                        \`;
+                        `;
                     });
                 }
 
@@ -1149,35 +1177,35 @@ app.get('/', (req, res) => {
 
                         let adBtn = '';
                         if(currentUser && (currentUser.status === 'admin' || (sh.can_ads && currentUser.username === sh.owner))) {
-                            adBtn = \`<button class="ad-post-btn" onclick="sendAdPost('Магазин', '\${sh.name}')">Реклама</button>\`;
+                            adBtn = `<button class="ad-post-btn" onclick="sendAdPost('Магазин', '${sh.name}')">Реклама</button>`;
                         }
 
                         let adminTools = '';
                         if(currentUser && currentUser.status === 'admin') {
-                            adminTools = \`
-                                <button class="msg-action-btn" onclick="startEditShop(\${sh.id})">Редактировать</button>
-                                <button class="msg-action-btn" style="background:#ff3333;color:#fff;border:none;" onclick="deleteShop(\${sh.id})">Удалить</button>
-                            \`;
+                            adminTools = `
+                                <button class="msg-action-btn" onclick="startEditShop(${sh.id})">Редактировать</button>
+                                <button class="msg-action-btn" style="background:#ff3333;color:#fff;border:none;" onclick="deleteShop(${sh.id})">Удалить</button>
+                            `;
                         }
 
-                        container.innerHTML += \`
+                        container.innerHTML += `
                             <div class="shop-card">
                                 <div class="shop-info">
-                                    <img src="\${sh.photoUrl || MAIN_IMAGE}" alt="shop">
+                                    <img src="${sh.photoUrl || MAIN_IMAGE}" alt="shop">
                                     <div>
-                                        <h4 style="color: #00eaff; font-size: 0.95em;">\${sh.name} <span style="font-size:0.7em;color:#aaa;">(@\${sh.owner || 'админ'})</span></h4>
-                                        <p style="font-size: 0.75em; color: #aaa; margin: 2px 0;">\${sh.description}</p>
-                                        <div>\${badges}</div>
-                                        <div style="margin-top:4px;">\${adminTools}</div>
+                                        <h4 style="color: #00eaff; font-size: 0.95em;">${sh.name} <span style="font-size:0.7em;color:#aaa;">(@${sh.owner || 'админ'})</span></h4>
+                                        <p style="font-size: 0.75em; color: #aaa; margin: 2px 0;">${sh.description}</p>
+                                        <div>${badges}</div>
+                                        <div style="margin-top:4px;">${adminTools}</div>
                                     </div>
                                 </div>
                                 <div class="btn-group">
-                                    \${adBtn}
-                                    <button class="complaint-btn" onclick="sendComplaint('Магазин', '\${sh.name}')">Жалоба</button>
-                                    <a href="\${sh.telegramUrl}" target="_blank" class="ex-tg-btn">Перейти</a>
+                                    ${adBtn}
+                                    <button class="complaint-btn" onclick="sendComplaint('Магазин', '${sh.name}')">Жалоба</button>
+                                    <a href="${sh.telegramUrl}" target="_blank" class="ex-tg-btn">Перейти</a>
                                 </div>
                             </div>
-                        \`;
+                        `;
                     });
                 }
 
@@ -1264,7 +1292,7 @@ app.get('/', (req, res) => {
 
                 socket.on('message_updated', (msg) => {
                     const textEl = document.getElementById('msg-text-' + msg.id);
-                    if(textEl) textEl.innerText = msg.text;
+                    if(textEl) textEl.textContent = msg.text;
                 });
 
                 socket.on('message_pinned', (msg) => {
@@ -1324,69 +1352,127 @@ app.get('/', (req, res) => {
 });
 
 io.on('connection', (socket) => {
-    const sessionUser = socket.request.session && socket.request.session.username ? socket.request.session.username : 'User';
+    const sessionUser = socket.request.session && socket.request.session.username ? socket.request.session.username : null;
+    if (!sessionUser) {
+        socket.disconnect();
+        return;
+    }
 
     db.all("SELECT * FROM messages ORDER BY timestamp ASC LIMIT 50", (err, rows) => {
-        if (!err) socket.emit('chat_history', rows);
+        if (err) {
+            console.error("Error loading chat history:", err.message);
+        } else {
+            socket.emit('chat_history', rows);
+        }
     });
 
     socket.on('chat_message', (data) => {
         const isAd = data.isAd ? 1 : 0;
         
-        db.get("SELECT avatarUrl FROM users WHERE username = ?", [sessionUser], (err, row) => {
+        db.get("SELECT avatarUrl FROM users WHERE username = ?", [sessionUser], (errUser, row) => {
+            if (errUser) {
+                console.error("Error finding user avatar for message:", errUser.message);
+                return;
+            }
             const avatar = row && row.avatarUrl ? row.avatarUrl : MAIN_IMAGE;
 
             db.run("INSERT INTO messages (username, avatarUrl, text, mediaUrl, mediaType, isAd, likes) VALUES (?, ?, ?, ?, ?, ?, ?)", 
-                [sessionUser, avatar, data.text, data.mediaUrl || null, data.mediaType || null, isAd, '[]'], function(err) {
-                if (!err) {
-                    io.emit('new_message', { 
-                        id: this.lastID, 
-                        username: sessionUser, 
-                        avatarUrl: avatar, 
-                        text: data.text, 
-                        mediaUrl: data.mediaUrl, 
-                        mediaType: data.mediaType, 
-                        isAd: isAd, 
-                        isPinned: 0, 
-                        likes: [],
-                        timestamp: new Date() 
-                    });
+                [sessionUser, avatar, data.text, data.mediaUrl || null, data.mediaType || null, isAd, '[]'], function(errInsert) {
+                if (errInsert) {
+                    console.error("DB Error inserting message:", errInsert.message);
+                    return;
                 }
+                
+                const newMsgId = this.lastID;
+                
+                // Ограничение истории чата (храним последние 500 сообщений)
+                db.run("DELETE FROM messages WHERE id NOT IN (SELECT id FROM messages ORDER BY timestamp DESC LIMIT 500)", (errClean) => {
+                    if (errClean) console.error("Error cleaning old messages:", errClean.message);
+                });
+
+                io.emit('new_message', { 
+                    id: newMsgId, 
+                    username: sessionUser, 
+                    avatarUrl: avatar, 
+                    text: data.text, 
+                    mediaUrl: data.mediaUrl, 
+                    mediaType: data.mediaType, 
+                    isAd: isAd, 
+                    isPinned: 0, 
+                    likes: [],
+                    timestamp: new Date() 
+                });
             });
         });
     });
 
     socket.on('edit_message', (data) => {
-        db.run("UPDATE messages SET text = ? WHERE id = ?", [data.text, data.id], (err) => {
-            if(!err) {
-                io.emit('message_updated', { id: data.id, text: data.text });
+        db.get("SELECT username FROM messages WHERE id = ?", [data.id], (err, msg) => {
+            if (err || !msg) {
+                if (err) console.error("Error finding message to edit:", err.message);
+                return;
             }
-        });
-    });
-
-    socket.on('pin_message', (data) => {
-        db.run("UPDATE messages SET isPinned = 0", [], () => {
-            db.run("UPDATE messages SET isPinned = 1 WHERE id = ?", [data.id], (err) => {
-                if(!err) {
-                    db.get("SELECT * FROM messages WHERE id = ?", [data.id], (err, row) => {
-                        if(row) io.emit('message_pinned', row);
+            db.get("SELECT status FROM users WHERE username = ?", [sessionUser], (err2, user) => {
+                if (err2 || !user) {
+                    if (err2) console.error("Error finding user status for edit:", err2.message);
+                    return;
+                }
+                if (user.status === 'admin' || msg.username === sessionUser) {
+                    db.run("UPDATE messages SET text = ? WHERE id = ?", [data.text, data.id], (err3) => {
+                        if (err3) {
+                            console.error("Error updating message text:", err3.message);
+                            return;
+                        }
+                        io.emit('message_updated', { id: data.id, text: data.text });
                     });
                 }
             });
         });
     });
 
-    socket.on('unpin_message', () => {
-        db.run("UPDATE messages SET isPinned = 0", [], (err) => {
-            if (!err) {
-                io.emit('message_unpinned');
+    socket.on('pin_message', (data) => {
+        db.get("SELECT status FROM users WHERE username = ?", [sessionUser], (err, user) => {
+            if (err || !user || user.status !== 'admin') {
+                if (err) console.error("Error finding user status for pin:", err.message);
+                return;
             }
+            db.run("UPDATE messages SET isPinned = 0", [], (errClear) => {
+                if (errClear) console.error("Error clearing pins:", errClear.message);
+                db.run("UPDATE messages SET isPinned = 1 WHERE id = ?", [data.id], (err2) => {
+                    if (err2) {
+                        console.error("Error pinning message:", err2.message);
+                        return;
+                    }
+                    db.get("SELECT * FROM messages WHERE id = ?", [data.id], (err3, row) => {
+                        if (row) io.emit('message_pinned', row);
+                    });
+                });
+            });
+        });
+    });
+
+    socket.on('unpin_message', () => {
+        db.get("SELECT status FROM users WHERE username = ?", [sessionUser], (err, user) => {
+            if (err || !user || user.status !== 'admin') {
+                if (err) console.error("Error finding user status for unpin:", err.message);
+                return;
+            }
+            db.run("UPDATE messages SET isPinned = 0", [], (err2) => {
+                if (err2) {
+                    console.error("Error unpinning messages:", err2.message);
+                    return;
+                }
+                io.emit('message_unpinned');
+            });
         });
     });
 
     socket.on('toggle_like', (data) => {
         db.get("SELECT likes FROM messages WHERE id = ?", [data.id], (err, row) => {
-            if (err || !row) return;
+            if (err || !row) {
+                if (err) console.error("Error fetching message likes:", err.message);
+                return;
+            }
             let likes = [];
             try {
                 likes = JSON.parse(row.likes || '[]');
@@ -1401,9 +1487,11 @@ io.on('connection', (socket) => {
 
             const likesJson = JSON.stringify(likes);
             db.run("UPDATE messages SET likes = ? WHERE id = ?", [likesJson, data.id], (err2) => {
-                if (!err2) {
-                    io.emit('likes_updated', { id: data.id, likes: likes });
+                if (err2) {
+                    console.error("Error updating likes in DB:", err2.message);
+                    return;
                 }
+                io.emit('likes_updated', { id: data.id, likes: likes });
             });
         });
     });
