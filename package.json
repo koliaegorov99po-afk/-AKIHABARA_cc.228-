@@ -1,17 +1,25 @@
 {
-  "name": "akihabara-chat",
-  "version": "3.0.0",
-  "description": "AKIHABARA Chat Platform",
-  "main": "server.js",
+  "name": "telegram-crypto-exchange-bot",
+  "version": "1.0.0",
+  "description": "Production-ready P2P exchange telegram bot for fiat and cryptocurrency",
+  "main": "index.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "python3 bot.py",
+    "dev": "nodemon bot.py",
+    "lint": "flake8 .",
+    "test": "pytest"
   },
-  "dependencies": {
-    "body-parser": "^1.20.3",
-    "express": "^4.21.2",
-    "express-session": "^1.18.1",
-    "multer": "^1.4.5-lts.1",
-    "socket.io": "^4.8.1",
-    "sqlite3": "^5.1.7"
+  "keywords": [
+    "telegram-bot",
+    "crypto-bot",
+    "exchange",
+    "p2p",
+    "aiogram"
+  ],
+  "author": "Русс Мальвина Ю.",
+  "license": "ISC",
+  "dependencies": {},
+  "devDependencies": {
+    "nodemon": "^3.1.0"
   }
 }
