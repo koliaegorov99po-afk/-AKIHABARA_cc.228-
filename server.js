@@ -1,4 +1,4 @@
-const express = require("express");
+Const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const sqlite3 = require("sqlite3").verbose();
@@ -13,7 +13,6 @@ const server = http.createServer(app);
 const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
-// Указываем хост '0.0.0.0', чтобы Render и другие облачные хостинги корректно принимали внешние запросы
 const HOST = process.env.HOST || "0.0.0.0";
 
 const MAIN_ADMIN = "koliaegorov99po-afk";
@@ -850,7 +849,7 @@ app.post("/api/profile/avatar", (req, res) => {
 
     const avatarUrl = String(
         req.body.avatarUrl || ""
-    ).trim().slice(0, 1000);
+    ).trim().slice(0, 2048);
 
     db.run(
         `
@@ -916,7 +915,9 @@ app.post("/api/exchangers/add", (req, res) => {
             name,
             photoUrl,
             telegramUrl,
-            description
+            description,
+            can_post,
+            can_ads
         } = req.body;
 
         if (!String(name || "").trim()) {
@@ -929,15 +930,17 @@ app.post("/api/exchangers/add", (req, res) => {
         db.run(
             `
             INSERT INTO exchangers
-            (name,photoUrl,telegramUrl,description,owner)
-            VALUES (?,?,?,?,?)
+            (name,photoUrl,telegramUrl,description,owner,can_post,can_ads)
+            VALUES (?,?,?,?,?,?,?)
             `,
             [
                 String(name).trim(),
-                String(photoUrl || ""),
-                String(telegramUrl || ""),
-                String(description || ""),
-                req.session.username
+                String(photoUrl || "").trim().slice(0, 2048),
+                String(telegramUrl || "").trim().slice(0, 500),
+                String(description || "").trim().slice(0, 2000),
+                req.session.username,
+                can_post ? 1 : 0,
+                can_ads ? 1 : 0
             ],
             err => {
 
@@ -968,6 +971,14 @@ app.post("/api/exchangers/edit", (req, res) => {
         }
 
         const id = Number(req.body.id);
+        const {
+            name,
+            photoUrl,
+            telegramUrl,
+            description,
+            can_post,
+            can_ads
+        } = req.body;
 
         db.run(
             `
@@ -975,14 +986,18 @@ app.post("/api/exchangers/edit", (req, res) => {
             SET name = ?,
                 photoUrl = ?,
                 telegramUrl = ?,
-                description = ?
+                description = ?,
+                can_post = ?,
+                can_ads = ?
             WHERE id = ?
             `,
             [
-                String(req.body.name || ""),
-                String(req.body.photoUrl || ""),
-                String(req.body.telegramUrl || ""),
-                String(req.body.description || ""),
+                String(name || "").trim(),
+                String(photoUrl || "").trim().slice(0, 2048),
+                String(telegramUrl || "").trim().slice(0, 500),
+                String(description || "").trim().slice(0, 2000),
+                can_post ? 1 : 0,
+                can_ads ? 1 : 0,
                 id
             ],
             err => {
@@ -1072,7 +1087,9 @@ app.post("/api/shops/add", (req, res) => {
             name,
             photoUrl,
             telegramUrl,
-            description
+            description,
+            can_post,
+            can_ads
         } = req.body;
 
         if (!String(name || "").trim()) {
@@ -1085,15 +1102,17 @@ app.post("/api/shops/add", (req, res) => {
         db.run(
             `
             INSERT INTO shops
-            (name,photoUrl,telegramUrl,description,owner)
-            VALUES (?,?,?,?,?)
+            (name,photoUrl,telegramUrl,description,owner,can_post,can_ads)
+            VALUES (?,?,?,?,?,?,?)
             `,
             [
                 String(name).trim(),
-                String(photoUrl || ""),
-                String(telegramUrl || ""),
-                String(description || ""),
-                req.session.username
+                String(photoUrl || "").trim().slice(0, 2048),
+                String(telegramUrl || "").trim().slice(0, 500),
+                String(description || "").trim().slice(0, 2000),
+                req.session.username,
+                can_post ? 1 : 0,
+                can_ads ? 1 : 0
             ],
             err => {
 
@@ -1123,20 +1142,33 @@ app.post("/api/shops/edit", (req, res) => {
             });
         }
 
+        const {
+            name,
+            photoUrl,
+            telegramUrl,
+            description,
+            can_post,
+            can_ads
+        } = req.body;
+
         db.run(
             `
             UPDATE shops
             SET name = ?,
                 photoUrl = ?,
                 telegramUrl = ?,
-                description = ?
+                description = ?,
+                can_post = ?,
+                can_ads = ?
             WHERE id = ?
             `,
             [
-                String(req.body.name || ""),
-                String(req.body.photoUrl || ""),
-                String(req.body.telegramUrl || ""),
-                String(req.body.description || ""),
+                String(name || "").trim(),
+                String(photoUrl || "").trim().slice(0, 2048),
+                String(telegramUrl || "").trim().slice(0, 500),
+                String(description || "").trim().slice(0, 2000),
+                can_post ? 1 : 0,
+                can_ads ? 1 : 0,
                 Number(req.body.id)
             ],
             err => {
@@ -1651,6 +1683,25 @@ textarea {
     margin-top: 8px;
 }
 
+.emoji-picker {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 8px;
+    background: #151515;
+    padding: 8px;
+    border-radius: 10px;
+    border: 1px solid #333;
+}
+
+.emoji-btn {
+    background: transparent;
+    border: none;
+    font-size: 20px;
+    cursor: pointer;
+    padding: 4px;
+}
+
 .cards {
     display: grid;
     grid-template-columns: repeat(auto-fit,minmax(250px,1fr));
@@ -1846,17 +1897,30 @@ onclick="switchTab('profile',this)">
 id="messageText"
 placeholder="Напишите сообщение... Используйте @username для тега"></textarea>
 
+<div class="emoji-picker">
+<button class="emoji-btn" onclick="addEmoji('😀')">😀</button>
+<button class="emoji-btn" onclick="addEmoji('😂')">😂</button>
+<button class="emoji-btn" onclick="addEmoji('🔥')">🔥</button>
+<button class="emoji-btn" onclick="addEmoji('👍')">👍</button>
+<button class="emoji-btn" onclick="addEmoji('❤️')">❤️</button>
+<button class="emoji-btn" onclick="addEmoji('🎉')">🎉</button>
+<button class="emoji-btn" onclick="addEmoji('😎')">😎</button>
+<button class="emoji-btn" onclick="addEmoji('💎')">💎</button>
+<button class="emoji-btn" onclick="addEmoji('🚀')">🚀</button>
+<button class="emoji-btn" onclick="addEmoji('💀')">💀</button>
+</div>
+
 <div class="media-row">
 
 <input
 id="mediaUrl"
-placeholder="Ссылка на фото/видео (необязательно)">
+placeholder="Прямая ссылка на фото, видео или GIF">
 
 <select id="mediaType"
 style="background:#111;color:white;border:1px solid #333;border-radius:10px;padding:8px">
 
 <option value="">Без медиа</option>
-<option value="image">Фото</option>
+<option value="image">Фото / GIF</option>
 <option value="video">Видео</option>
 
 </select>
@@ -1922,7 +1986,7 @@ alt="avatar">
 
 <input
 id="avatarUrl"
-placeholder="URL вашей аватарки"
+placeholder="URL вашей аватарки (картинки)"
 style="width:100%;padding:12px;background:#111;color:white;border:1px solid #333;border-radius:10px">
 
 <button onclick="saveAvatar()">
@@ -1995,23 +2059,20 @@ placeholder="username нового администратора">
 
 <div class="admin-section">
 
-<h3>🏪 Добавить магазин</h3>
+<h3>🏪 Управление магазинами</h3>
 
-<input id="shopName"
-placeholder="Название">
-
-<input id="shopPhoto"
-placeholder="URL фото">
-
-<input id="shopTelegram"
-placeholder="Telegram ссылка">
-
-<textarea id="shopDescription"
-placeholder="Описание"></textarea>
+<input id="shopName" placeholder="Название">
+<input id="shopPhoto" placeholder="URL фото / логотипа">
+<input id="shopTelegram" placeholder="Telegram ссылка">
+<textarea id="shopDescription" placeholder="Описание"></textarea>
+<label><input type="checkbox" id="shopPost" checked> Разрешить посты</label><br>
+<label><input type="checkbox" id="shopAds" checked> Разрешить рекламу</label><br><br>
 
 <button onclick="addShop()">
 ➕ ДОБАВИТЬ МАГАЗИН
 </button>
+
+<div id="adminShopsList" style="margin-top:15px;"></div>
 
 </div>
 
@@ -2019,23 +2080,20 @@ placeholder="Описание"></textarea>
 
 <div class="admin-section">
 
-<h3>💱 Добавить обменник</h3>
+<h3>💱 Управление обменниками</h3>
 
-<input id="exchangerName"
-placeholder="Название">
-
-<input id="exchangerPhoto"
-placeholder="URL фото">
-
-<input id="exchangerTelegram"
-placeholder="Telegram ссылка">
-
-<textarea id="exchangerDescription"
-placeholder="Описание"></textarea>
+<input id="exchangerName" placeholder="Название">
+<input id="exchangerPhoto" placeholder="URL фото / логотипа">
+<input id="exchangerTelegram" placeholder="Telegram ссылка">
+<textarea id="exchangerDescription" placeholder="Описание"></textarea>
+<label><input type="checkbox" id="exchangerPost" checked> Разрешить посты</label><br>
+<label><input type="checkbox" id="exchangerAds" checked> Разрешить рекламу</label><br><br>
 
 <button onclick="addExchanger()">
 ➕ ДОБАВИТЬ ОБМЕННИК
 </button>
+
+<div id="adminExchangersList" style="margin-top:15px;"></div>
 
 </div>
 
@@ -2242,6 +2300,12 @@ function switchTab(id, button) {
 /* ======================================================
    CHAT
 ====================================================== */
+
+function addEmoji(emoji) {
+    const textarea = document.getElementById("messageText");
+    textarea.value += emoji;
+    textarea.focus();
+}
 
 function sendMessage() {
 
@@ -2480,6 +2544,9 @@ async function loadExchangers() {
         document.getElementById("exchangersList");
 
     box.innerHTML = "";
+    
+    let adminBox = document.getElementById("adminExchangersList");
+    if (adminBox) adminBox.innerHTML = "";
 
     data.exchangers.forEach(item => {
 
@@ -2501,6 +2568,10 @@ async function loadExchangers() {
             \${escapeHtml(item.description)}
             </p>
 
+            <p style="font-size:12px; color:#aaa;">
+            Права: Посты: \${item.can_post ? '✅' : '❌'} | Реклама: \${item.can_ads ? '✅' : '❌'}
+            </p>
+
             \${
                 item.telegramUrl
                 ?
@@ -2512,34 +2583,20 @@ async function loadExchangers() {
                 ""
             }
 
-            \${
-                currentUser &&
-                (
-                    currentUser.status === "admin" ||
-                    currentUser.status === "main_admin"
-                )
-                ?
-                \`
-                <br><br>
-
-                <button
-                onclick="editExchanger(\${item.id})">
-                ✏️ Редактировать
-                </button>
-
-                <button
-                class="danger"
-                onclick="deleteExchanger(\${item.id})">
-                🗑 Удалить
-                </button>
-                \`
-                :
-                ""
-            }
-
         </div>
 
         \`;
+
+        if (adminBox && currentUser && (currentUser.status === "admin" || currentUser.status === "main_admin")) {
+            adminBox.innerHTML += \`
+                <div class="admin-item">
+                    <strong>\${escapeHtml(item.name)}</strong><br>
+                    Посты: \${item.can_post ? '✅' : '❌'} | Реклама: \${item.can_ads ? '✅' : '❌'}<br><br>
+                    <button onclick="editExchanger(\${item.id})">✏️ Редактировать / Права</button>
+                    <button class="danger" onclick="deleteExchanger(\${item.id})">🗑 Удалить</button>
+                </div>
+            \`;
+        }
     });
 }
 
@@ -2559,6 +2616,9 @@ async function loadShops() {
         document.getElementById("shopsList");
 
     box.innerHTML = "";
+    
+    let adminBox = document.getElementById("adminShopsList");
+    if (adminBox) adminBox.innerHTML = "";
 
     data.shops.forEach(item => {
 
@@ -2580,6 +2640,10 @@ async function loadShops() {
             \${escapeHtml(item.description)}
             </p>
 
+            <p style="font-size:12px; color:#aaa;">
+            Права: Посты: \${item.can_post ? '✅' : '❌'} | Реклама: \${item.can_ads ? '✅' : '❌'}
+            </p>
+
             \${
                 item.telegramUrl
                 ?
@@ -2591,34 +2655,20 @@ async function loadShops() {
                 ""
             }
 
-            \${
-                currentUser &&
-                (
-                    currentUser.status === "admin" ||
-                    currentUser.status === "main_admin"
-                )
-                ?
-                \`
-                <br><br>
-
-                <button
-                onclick="editShop(\${item.id})">
-                ✏️ Редактировать
-                </button>
-
-                <button
-                class="danger"
-                onclick="deleteShop(\${item.id})">
-                🗑 Удалить
-                </button>
-                \`
-                :
-                ""
-            }
-
         </div>
 
         \`;
+
+        if (adminBox && currentUser && (currentUser.status === "admin" || currentUser.status === "main_admin")) {
+            adminBox.innerHTML += \`
+                <div class="admin-item">
+                    <strong>\${escapeHtml(item.name)}</strong><br>
+                    Посты: \${item.can_post ? '✅' : '❌'} | Реклама: \${item.can_ads ? '✅' : '❌'}<br><br>
+                    <button onclick="editShop(\${item.id})">✏️ Редактировать / Права</button>
+                    <button class="danger" onclick="deleteShop(\${item.id})">🗑 Удалить</button>
+                </div>
+            \`;
+        }
     });
 }
 
@@ -2795,7 +2845,13 @@ async function addShop() {
             document.getElementById("shopTelegram").value,
 
         description:
-            document.getElementById("shopDescription").value
+            document.getElementById("shopDescription").value,
+
+        can_post:
+            document.getElementById("shopPost").checked ? 1 : 0,
+
+        can_ads:
+            document.getElementById("shopAds").checked ? 1 : 0
     };
 
     const r =
@@ -2840,6 +2896,9 @@ async function editShop(id) {
     const description =
         prompt("Описание:");
 
+    const canPostStr = prompt("Разрешить посты? (1 - да, 0 - нет)", "1");
+    const canAdsStr = prompt("Разрешить рекламу и закрепы? (1 - да, 0 - нет)", "1");
+
     const r =
         await fetch("/api/shops/edit", {
             method:"POST",
@@ -2851,7 +2910,9 @@ async function editShop(id) {
                 name,
                 photoUrl,
                 telegramUrl,
-                description
+                description,
+                can_post: canPostStr === "1" ? 1 : 0,
+                can_ads: canAdsStr === "1" ? 1 : 0
             })
         });
 
@@ -2906,7 +2967,13 @@ async function addExchanger() {
             document.getElementById("exchangerTelegram").value,
 
         description:
-            document.getElementById("exchangerDescription").value
+            document.getElementById("exchangerDescription").value,
+
+        can_post:
+            document.getElementById("exchangerPost").checked ? 1 : 0,
+
+        can_ads:
+            document.getElementById("exchangerAds").checked ? 1 : 0
     };
 
     const r =
@@ -2951,6 +3018,9 @@ async function editExchanger(id) {
     const description =
         prompt("Описание:");
 
+    const canPostStr = prompt("Разрешить посты? (1 - да, 0 - нет)", "1");
+    const canAdsStr = prompt("Разрешить рекламу и закрепы? (1 - да, 0 - нет)", "1");
+
     const r =
         await fetch("/api/exchangers/edit", {
             method:"POST",
@@ -2962,7 +3032,9 @@ async function editExchanger(id) {
                 name,
                 photoUrl,
                 telegramUrl,
-                description
+                description,
+                can_post: canPostStr === "1" ? 1 : 0,
+                can_ads: canAdsStr === "1" ? 1 : 0
             })
         });
 
