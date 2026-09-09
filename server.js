@@ -1,4 +1,4 @@
-const express = require("express");
+Const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const sqlite3 = require("sqlite3").verbose();
@@ -313,6 +313,8 @@ app.post("/login", (req, res) => {
                                 text: `${username} присоединился к AKIHABARA`
                             });
 
+                            io.emit("users_updated");
+
                             res.json({
                                 ok: true,
                                 user
@@ -537,6 +539,7 @@ app.post("/api/admins/add", (req, res) => {
                         }
 
                         io.emit("admins_updated");
+                        io.emit("users_updated");
 
                         res.json({
                             ok: true,
@@ -568,6 +571,7 @@ app.post("/api/admins/add", (req, res) => {
                     }
 
                     io.emit("admins_updated");
+                    io.emit("users_updated");
 
                     res.json({
                         ok: true,
@@ -611,6 +615,7 @@ app.post("/api/admins/remove", (req, res) => {
             }
 
             io.emit("admins_updated");
+            io.emit("users_updated");
 
             res.json({
                 ok: true
@@ -668,6 +673,7 @@ app.post("/api/admins/edit", (req, res) => {
             }
 
             io.emit("admins_updated");
+            io.emit("users_updated");
 
             res.json({
                 ok: true
@@ -677,7 +683,7 @@ app.post("/api/admins/edit", (req, res) => {
 });
 
 /* =========================================================
-   USER STATUS
+   USER STATUS & AVATAR BY MAIN ADMIN
 ========================================================= */
 
 app.post("/api/admin/user-status", (req, res) => {
@@ -725,6 +731,7 @@ app.post("/api/admin/user-status", (req, res) => {
                 }
 
                 io.emit("users_updated");
+                io.emit("admins_updated");
 
                 res.json({
                     ok: true
@@ -732,6 +739,35 @@ app.post("/api/admin/user-status", (req, res) => {
             }
         );
     });
+});
+
+app.post("/api/admin/set-user-avatar", (req, res) => {
+    if (!isMainAdmin(req.session.username)) {
+        return res.status(403).json({
+            ok: false,
+            error: "Только главный администратор может менять аватарки пользователям"
+        });
+    }
+
+    const username = normalizeUsername(req.body.username);
+    const avatarUrl = String(req.body.avatarUrl || "").trim().slice(0, 2048);
+
+    db.run(
+        `
+        UPDATE users
+        SET avatarUrl = ?
+        WHERE username = ?
+        `,
+        [avatarUrl, username],
+        err => {
+            if (err) {
+                return res.status(500).json({ ok: false });
+            }
+            io.emit("users_updated");
+            io.emit("admins_updated");
+            res.json({ ok: true });
+        }
+    );
 });
 
 app.post("/api/admin/delete-user", (req, res) => {
@@ -764,6 +800,7 @@ app.post("/api/admin/delete-user", (req, res) => {
             }
 
             io.emit("users_updated");
+            io.emit("admins_updated");
 
             res.json({
                 ok: true
@@ -838,6 +875,8 @@ app.post("/api/profile/avatar", (req, res) => {
                 });
             }
 
+            io.emit("users_updated");
+
             res.json({
                 ok: true,
                 avatarUrl
@@ -881,6 +920,7 @@ app.post("/api/exchangers/add", (req, res) => {
             photoUrl,
             telegramUrl,
             description,
+            owner,
             can_post,
             can_ads
         } = req.body;
@@ -891,6 +931,8 @@ app.post("/api/exchangers/add", (req, res) => {
                 error: "Введите название обменника"
             });
         }
+
+        const targetOwner = isMainAdmin(req.session.username) && owner ? normalizeUsername(owner) : req.session.username;
 
         db.run(
             `
@@ -903,7 +945,7 @@ app.post("/api/exchangers/add", (req, res) => {
                 String(photoUrl || "").trim().slice(0, 2048),
                 String(telegramUrl || "").trim().slice(0, 500),
                 String(description || "").trim().slice(0, 2000),
-                req.session.username,
+                targetOwner,
                 can_post ? 1 : 0,
                 can_ads ? 1 : 0
             ],
@@ -938,9 +980,25 @@ app.post("/api/exchangers/edit", (req, res) => {
             photoUrl,
             telegramUrl,
             description,
+            owner,
             can_post,
             can_ads
         } = req.body;
+
+        const updateOwnerQuery = isMainAdmin(req.session.username) && owner ? ", owner = ?" : "";
+        const queryParams = [
+            String(name || "").trim(),
+            String(photoUrl || "").trim().slice(0, 2048),
+            String(telegramUrl || "").trim().slice(0, 500),
+            String(description || "").trim().slice(0, 2000),
+            can_post ? 1 : 0,
+            can_ads ? 1 : 0
+        ];
+
+        if (isMainAdmin(req.session.username) && owner) {
+            queryParams.push(normalizeUsername(owner));
+        }
+        queryParams.push(id);
 
         db.run(
             `
@@ -951,17 +1009,10 @@ app.post("/api/exchangers/edit", (req, res) => {
                 description = ?,
                 can_post = ?,
                 can_ads = ?
+                ${updateOwnerQuery}
             WHERE id = ?
             `,
-            [
-                String(name || "").trim(),
-                String(photoUrl || "").trim().slice(0, 2048),
-                String(telegramUrl || "").trim().slice(0, 500),
-                String(description || "").trim().slice(0, 2000),
-                can_post ? 1 : 0,
-                can_ads ? 1 : 0,
-                id
-            ],
+            queryParams,
             err => {
                 if (err) {
                     return res.status(500).json({
@@ -1042,6 +1093,7 @@ app.post("/api/shops/add", (req, res) => {
             photoUrl,
             telegramUrl,
             description,
+            owner,
             can_post,
             can_ads
         } = req.body;
@@ -1052,6 +1104,8 @@ app.post("/api/shops/add", (req, res) => {
                 error: "Введите название магазина"
             });
         }
+
+        const targetOwner = isMainAdmin(req.session.username) && owner ? normalizeUsername(owner) : req.session.username;
 
         db.run(
             `
@@ -1064,7 +1118,7 @@ app.post("/api/shops/add", (req, res) => {
                 String(photoUrl || "").trim().slice(0, 2048),
                 String(telegramUrl || "").trim().slice(0, 500),
                 String(description || "").trim().slice(0, 2000),
-                req.session.username,
+                targetOwner,
                 can_post ? 1 : 0,
                 can_ads ? 1 : 0
             ],
@@ -1098,9 +1152,25 @@ app.post("/api/shops/edit", (req, res) => {
             photoUrl,
             telegramUrl,
             description,
+            owner,
             can_post,
             can_ads
         } = req.body;
+
+        const updateOwnerQuery = isMainAdmin(req.session.username) && owner ? ", owner = ?" : "";
+        const queryParams = [
+            String(name || "").trim(),
+            String(photoUrl || "").trim().slice(0, 2048),
+            String(telegramUrl || "").trim().slice(0, 500),
+            String(description || "").trim().slice(0, 2000),
+            can_post ? 1 : 0,
+            can_ads ? 1 : 0
+        ];
+
+        if (isMainAdmin(req.session.username) && owner) {
+            queryParams.push(normalizeUsername(owner));
+        }
+        queryParams.push(Number(req.body.id));
 
         db.run(
             `
@@ -1111,17 +1181,10 @@ app.post("/api/shops/edit", (req, res) => {
                 description = ?,
                 can_post = ?,
                 can_ads = ?
+                ${updateOwnerQuery}
             WHERE id = ?
             `,
-            [
-                String(name || "").trim(),
-                String(photoUrl || "").trim().slice(0, 2048),
-                String(telegramUrl || "").trim().slice(0, 500),
-                String(description || "").trim().slice(0, 2000),
-                can_post ? 1 : 0,
-                can_ads ? 1 : 0,
-                Number(req.body.id)
-            ],
+            queryParams,
             err => {
                 if (err) {
                     return res.status(500).json({
@@ -1535,6 +1598,7 @@ textarea {
 <button class="tab" onclick="switchTab('profile',this)">👤 ПРОФИЛЬ</button>
 </div>
 
+<!-- CHAT -->
 <section id="chat" class="page active">
 <div class="chat">
 <div class="messages" id="messages"></div>
@@ -1565,16 +1629,19 @@ textarea {
 </div>
 </section>
 
+<!-- EXCHANGERS -->
 <section id="exchangers" class="page">
 <h2>💱 Обменники</h2>
 <div id="exchangersList" class="cards"></div>
 </section>
 
+<!-- SHOPS -->
 <section id="shops" class="page">
 <h2>🏪 Магазины</h2>
 <div id="shopsList" class="cards"></div>
 </section>
 
+<!-- PROFILE -->
 <section id="profile" class="page">
 <div class="profile">
 <h2>👤 Профиль</h2>
@@ -1589,8 +1656,19 @@ textarea {
 <button onclick="copyRefLink()">📋 СКОПИРОВАТЬ</button>
 <h3>👥 Приглашённые пользователи</h3>
 <div id="myReferrals"></div>
+
+<div id="myPersonalShopsContainer" style="margin-top:20px;">
+<h3>🏪 Мои Магазины</h3>
+<div id="myShopsList" class="cards"></div>
 </div>
 
+<div id="myPersonalExchangersContainer" style="margin-top:20px;">
+<h3>💱 Мои Обменники</h3>
+<div id="myExchangersList" class="cards"></div>
+</div>
+</div>
+
+<!-- ADMIN -->
 <div id="adminPanel" class="admin" style="display:none">
 <h2>👑 АДМИН-ПАНЕЛЬ</h2>
 <div class="admin-section">
@@ -1609,6 +1687,7 @@ textarea {
 <input id="shopName" placeholder="Название">
 <input id="shopPhoto" placeholder="URL фото / логотипа">
 <input id="shopTelegram" placeholder="Telegram ссылка">
+<input id="shopOwner" placeholder="Владелец (username, необязательно)" style="display:none">
 <textarea id="shopDescription" placeholder="Описание"></textarea>
 <label><input type="checkbox" id="shopPost" checked> Разрешить посты</label><br>
 <label><input type="checkbox" id="shopAds" checked> Разрешить рекламу</label><br><br>
@@ -1620,6 +1699,7 @@ textarea {
 <input id="exchangerName" placeholder="Название">
 <input id="exchangerPhoto" placeholder="URL фото / логотипа">
 <input id="exchangerTelegram" placeholder="Telegram ссылка">
+<input id="exchangerOwner" placeholder="Владелец (username, необязательно)" style="display:none">
 <textarea id="exchangerDescription" placeholder="Описание"></textarea>
 <label><input type="checkbox" id="exchangerPost" checked> Разрешить посты</label><br>
 <label><input type="checkbox" id="exchangerAds" checked> Разрешить рекламу</label><br><br>
@@ -1643,6 +1723,8 @@ textarea {
 const socket = io();
 let currentUser = null;
 let allUsers = [];
+let allShops = [];
+let allExchangers = [];
 
 async function init() {
     await loadUser();
@@ -1653,6 +1735,12 @@ async function init() {
 
     if (currentUser && (currentUser.status === "admin" || currentUser.status === "main_admin")) {
         document.getElementById("adminPanel").style.display = "block";
+        if (currentUser.status === "main_admin") {
+            const shOwn = document.getElementById("shopOwner");
+            const exOwn = document.getElementById("exchangerOwner");
+            if(shOwn) shOwn.style.display = "block";
+            if(exOwn) exOwn.style.display = "block";
+        }
         await loadAdmins();
         await loadUsers();
         await loadComplaints();
@@ -1680,6 +1768,7 @@ async function loadUser() {
         document.getElementById("adminsSection").style.display = "none";
     }
     loadMyReferrals();
+    renderMyPersonalRooms();
 }
 
 async function loadStats() {
@@ -1828,13 +1917,14 @@ async function loadChat() { location.reload(); }
 async function loadExchangers() {
     const r = await fetch("/api/exchangers");
     const data = await r.json();
+    allExchangers = data.exchangers || [];
     const box = document.getElementById("exchangersList");
     box.innerHTML = "";
     
     let adminBox = document.getElementById("adminExchangersList");
     if (adminBox) adminBox.innerHTML = "";
 
-    data.exchangers.forEach(item => {
+    allExchangers.forEach(item => {
         let photoHtml = item.photoUrl ? '<img src="' + escapeAttr(item.photoUrl) + '">' : "";
         let tgHtml = item.telegramUrl ? '<a href="' + escapeAttr(item.telegramUrl) + '" target="_blank">✈️ Telegram</a>' : "";
 
@@ -1843,32 +1933,35 @@ async function loadExchangers() {
                 photoHtml +
                 '<h3>' + escapeHtml(item.name) + '</h3>' +
                 '<p>' + escapeHtml(item.description) + '</p>' +
-                '<p style="font-size:12px; color:#aaa;">Права: Посты: ' + (item.can_post ? '✅' : '❌') + ' | Реклама: ' + (item.can_ads ? '✅' : '❌') + '</p>' +
+                '<p style="font-size:12px; color:#aaa;">Владелец: @' + escapeHtml(item.owner || 'система') + '<br>Права: Посты: ' + (item.can_post ? '✅' : '❌') + ' | Реклама: ' + (item.can_ads ? '✅' : '❌') + '</p>' +
                 tgHtml +
             '</div>';
 
         if (adminBox && currentUser && (currentUser.status === "admin" || currentUser.status === "main_admin")) {
             adminBox.innerHTML += 
                 '<div class="admin-item">' +
-                    '<strong>' + escapeHtml(item.name) + '</strong><br>' +
+                    '<strong>' + escapeHtml(item.name) + '</strong> (Владелец: @' + escapeHtml(item.owner || 'система') + ')<br>' +
                     'Посты: ' + (item.can_post ? '✅' : '❌') + ' | Реклама: ' + (item.can_ads ? '✅' : '❌') + '<br><br>' +
                     '<button onclick="editExchanger(' + item.id + ')">✏️ Редактировать / Права</button> ' +
                     '<button class="danger" onclick="deleteExchanger(' + item.id + ')">🗑 Удалить</button>' +
                 '</div>';
         }
     });
+
+    renderMyPersonalRooms();
 }
 
 async function loadShops() {
     const r = await fetch("/api/shops");
     const data = await r.json();
+    allShops = data.shops || [];
     const box = document.getElementById("shopsList");
     box.innerHTML = "";
     
     let adminBox = document.getElementById("adminShopsList");
     if (adminBox) adminBox.innerHTML = "";
 
-    data.shops.forEach(item => {
+    allShops.forEach(item => {
         let photoHtml = item.photoUrl ? '<img src="' + escapeAttr(item.photoUrl) + '">' : "";
         let tgHtml = item.telegramUrl ? '<a href="' + escapeAttr(item.telegramUrl) + '" target="_blank">✈️ Telegram</a>' : "";
 
@@ -1877,20 +1970,68 @@ async function loadShops() {
                 photoHtml +
                 '<h3>' + escapeHtml(item.name) + '</h3>' +
                 '<p>' + escapeHtml(item.description) + '</p>' +
-                '<p style="font-size:12px; color:#aaa;">Права: Посты: ' + (item.can_post ? '✅' : '❌') + ' | Реклама: ' + (item.can_ads ? '✅' : '❌') + '</p>' +
+                '<p style="font-size:12px; color:#aaa;">Владелец: @' + escapeHtml(item.owner || 'система') + '<br>Права: Посты: ' + (item.can_post ? '✅' : '❌') + ' | Реклама: ' + (item.can_ads ? '✅' : '❌') + '</p>' +
                 tgHtml +
             '</div>';
 
         if (adminBox && currentUser && (currentUser.status === "admin" || currentUser.status === "main_admin")) {
             adminBox.innerHTML += 
                 '<div class="admin-item">' +
-                    '<strong>' + escapeHtml(item.name) + '</strong><br>' +
+                    '<strong>' + escapeHtml(item.name) + '</strong> (Владелец: @' + escapeHtml(item.owner || 'система') + ')<br>' +
                     'Посты: ' + (item.can_post ? '✅' : '❌') + ' | Реклама: ' + (item.can_ads ? '✅' : '❌') + '<br><br>' +
                     '<button onclick="editShop(' + item.id + ')">✏️ Редактировать / Права</button> ' +
                     '<button class="danger" onclick="deleteShop(' + item.id + ')">🗑 Удалить</button>' +
                 '</div>';
         }
     });
+
+    renderMyPersonalRooms();
+}
+
+function renderMyPersonalRooms() {
+    if (!currentUser) return;
+    const myShopsBox = document.getElementById("myShopsList");
+    const myExchBox = document.getElementById("myExchangersList");
+
+    if (myShopsBox) {
+        myShopsBox.innerHTML = "";
+        const userShops = allShops.filter(s => s.owner === currentUser.username);
+        if (userShops.length === 0) {
+            myShopsBox.innerHTML = '<p style="color:#888;">У вас нет привязанных магазинов</p>';
+        } else {
+            userShops.forEach(item => {
+                let photoHtml = item.photoUrl ? '<img src="' + escapeAttr(item.photoUrl) + '">' : "";
+                let tgHtml = item.telegramUrl ? '<a href="' + escapeAttr(item.telegramUrl) + '" target="_blank">✈️ Telegram</a>' : "";
+                myShopsBox.innerHTML += 
+                    '<div class="card">' +
+                        photoHtml +
+                        '<h3>' + escapeHtml(item.name) + '</h3>' +
+                        '<p>' + escapeHtml(item.description) + '</p>' +
+                        tgHtml +
+                    '</div>';
+            });
+        }
+    }
+
+    if (myExchBox) {
+        myExchBox.innerHTML = "";
+        const userExch = allExchangers.filter(e => e.owner === currentUser.username);
+        if (userExch.length === 0) {
+            myExchBox.innerHTML = '<p style="color:#888;">У вас нет привязанных обменников</p>';
+        } else {
+            userExch.forEach(item => {
+                let photoHtml = item.photoUrl ? '<img src="' + escapeAttr(item.photoUrl) + '">' : "";
+                let tgHtml = item.telegramUrl ? '<a href="' + escapeAttr(item.telegramUrl) + '" target="_blank">✈️ Telegram</a>' : "";
+                myExchBox.innerHTML += 
+                    '<div class="card">' +
+                        photoHtml +
+                        '<h3>' + escapeHtml(item.name) + '</h3>' +
+                        '<p>' + escapeHtml(item.description) + '</p>' +
+                        tgHtml +
+                    '</div>';
+            });
+        }
+    }
 }
 
 async function loadAdmins() {
@@ -1901,6 +2042,10 @@ async function loadAdmins() {
 
     data.admins.forEach(admin => {
         let actions = "";
+        let avatarEdit = "";
+        if (currentUser && currentUser.status === "main_admin") {
+            avatarEdit = '<br><button class="small-btn" onclick="setAdminAvatar(\\'' + escapeJs(admin.username) + '\\')">🖼 Сменить аватарку</button>';
+        }
         if (admin.status !== "main_admin") {
             actions = 
                 '<br><br>' +
@@ -1912,9 +2057,26 @@ async function loadAdmins() {
             '<div class="admin-item">' +
                 '<strong>@' + escapeHtml(admin.username) + '</strong><br>' +
                 'Статус: ' + escapeHtml(admin.status) +
+                avatarEdit +
                 actions +
             '</div>';
     });
+}
+
+async function setAdminAvatar(username) {
+    const avatarUrl = prompt("Введите URL аватарки для @" + username + ":");
+    if (avatarUrl === null) return;
+    const r = await fetch("/api/admin/set-user-avatar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, avatarUrl })
+    });
+    const data = await r.json();
+    if (!data.ok) {
+        alert("Ошибка");
+        return;
+    }
+    alert("Аватар успешно изменен!");
 }
 
 async function addAdmin() {
@@ -1976,6 +2138,7 @@ async function addShop() {
         name: document.getElementById("shopName").value,
         photoUrl: document.getElementById("shopPhoto").value,
         telegramUrl: document.getElementById("shopTelegram").value,
+        owner: document.getElementById("shopOwner").value,
         description: document.getElementById("shopDescription").value,
         can_post: document.getElementById("shopPost").checked ? 1 : 0,
         can_ads: document.getElementById("shopAds").checked ? 1 : 0
@@ -1995,6 +2158,7 @@ async function addShop() {
     document.getElementById("shopPhoto").value = "";
     document.getElementById("shopTelegram").value = "";
     document.getElementById("shopDescription").value = "";
+    if(document.getElementById("shopOwner")) document.getElementById("shopOwner").value = "";
     loadShops();
 }
 
@@ -2003,6 +2167,7 @@ async function editShop(id) {
     if (!name) return;
     const photoUrl = prompt("URL фото:");
     const telegramUrl = prompt("Telegram:");
+    const owner = prompt("Владелец (username):");
     const description = prompt("Описание:");
     const canPostStr = prompt("Разрешить посты? (1 - да, 0 - нет)", "1");
     const canAdsStr = prompt("Разрешить рекламу и закрепы? (1 - да, 0 - нет)", "1");
@@ -2011,7 +2176,7 @@ async function editShop(id) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-            id, name, photoUrl, telegramUrl, description,
+            id, name, photoUrl, telegramUrl, owner, description,
             can_post: canPostStr === "1" ? 1 : 0,
             can_ads: canAdsStr === "1" ? 1 : 0
         })
@@ -2044,6 +2209,7 @@ async function addExchanger() {
         name: document.getElementById("exchangerName").value,
         photoUrl: document.getElementById("exchangerPhoto").value,
         telegramUrl: document.getElementById("exchangerTelegram").value,
+        owner: document.getElementById("exchangerOwner").value,
         description: document.getElementById("exchangerDescription").value,
         can_post: document.getElementById("exchangerPost").checked ? 1 : 0,
         can_ads: document.getElementById("exchangerAds").checked ? 1 : 0
@@ -2063,6 +2229,7 @@ async function addExchanger() {
     document.getElementById("exchangerPhoto").value = "";
     document.getElementById("exchangerTelegram").value = "";
     document.getElementById("exchangerDescription").value = "";
+    if(document.getElementById("exchangerOwner")) document.getElementById("exchangerOwner").value = "";
     loadExchangers();
 }
 
@@ -2071,6 +2238,7 @@ async function editExchanger(id) {
     if (!name) return;
     const photoUrl = prompt("URL фото:");
     const telegramUrl = prompt("Telegram:");
+    const owner = prompt("Владелец (username):");
     const description = prompt("Описание:");
     const canPostStr = prompt("Разрешить посты? (1 - да, 0 - нет)", "1");
     const canAdsStr = prompt("Разрешить рекламу и закрепы? (1 - да, 0 - нет)", "1");
@@ -2079,7 +2247,7 @@ async function editExchanger(id) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-            id, name, photoUrl, telegramUrl, description,
+            id, name, photoUrl, telegramUrl, owner, description,
             can_post: canPostStr === "1" ? 1 : 0,
             can_ads: canAdsStr === "1" ? 1 : 0
         })
@@ -2416,7 +2584,7 @@ function updateLikes(messageId) {
         `,
         [messageId],
         (err, row) => {
-            if (err) return;
+            if (err) error => {};
 
             db.run(
                 `
