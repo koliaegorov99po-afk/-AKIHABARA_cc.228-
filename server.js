@@ -20,7 +20,7 @@ app.use(express.json());
 app.use(express.static('public'));
 
 const sessionMiddleware = session({
-    secret: 'akihabara_secret_key_228',
+    secret: process.env.SESSION_SECRET || 'akihabara_secret_key_228',
     resave: false,
     saveUninitialized: true,
 });
@@ -79,30 +79,32 @@ app.post('/login', (req, res) => {
     req.session.username = username;
     const role = (username.toLowerCase() === 'koliaegorov99po-afk') ? 'admin' : 'user';
 
-    db.get("SELECT * FROM users WHERE username = ?", [username], (err, existingUser) => {
-        if (!existingUser) {
-            let actualInvitedBy = null;
-            if (ref && ref !== username) {
-                db.get("SELECT username FROM users WHERE username = ?", [ref], (err, refUser) => {
-                    if (refUser) {
-                        actualInvitedBy = refUser.username;
-                        db.run("UPDATE users SET invites = invites + 1 WHERE username = ?", [refUser.username]);
-                    }
-                    saveUser(username, role, actualInvitedBy, res);
-                });
+    db.serialize(() => {
+        db.get("SELECT * FROM users WHERE username = ?", [username], (err, existingUser) => {
+            if (!existingUser) {
+                let actualInvitedBy = null;
+                if (ref && ref !== username) {
+                    db.get("SELECT username FROM users WHERE username = ?", [ref], (err, refUser) => {
+                        if (refUser) {
+                            actualInvitedBy = refUser.username;
+                            db.run("UPDATE users SET invites = invites + 1 WHERE username = ?", [refUser.username]);
+                        }
+                        saveUser(username, role, actualInvitedBy, res);
+                    });
+                } else {
+                    saveUser(username, role, null, res);
+                }
             } else {
-                saveUser(username, role, null, res);
+                res.redirect('/');
             }
-        } else {
-            res.redirect('/');
-        }
+        });
     });
 });
 
 function saveUser(username, role, invitedBy, res) {
     db.run("INSERT OR IGNORE INTO users (username, status, avatarUrl, invitedBy) VALUES (?, ?, ?, ?)",
         [username, role, MAIN_IMAGE, invitedBy], () => {
-            io.emit('system_message', { text: `🎉 Пользователь @${username} присоединился к платформе!` });
+            io.emit('system_message', { text: `🎉 Участник @${username} присоединился к платформе!` });
             res.redirect('/');
         });
 }
@@ -180,10 +182,13 @@ app.get('/api/admin/data', (req, res) => {
 app.post('/api/admin/set-status', (req, res) => {
     if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
     db.get("SELECT status, username FROM users WHERE username = ?", [req.session.username], (err, user) => {
-        if (!user || user.status !== 'admin' || user.username.toLowerCase() !== 'koliaegorov99po-afk') {
-            return res.status(403).json({ error: 'Only main admin can assign statuses' });
+        if (!user || user.status !== 'admin') {
+            return res.status(403).json({ error: 'Access denied' });
         }
         const { targetUser, newStatus } = req.body;
+        if (user.username.toLowerCase() !== 'koliaegorov99po-afk' && targetUser.toLowerCase() === 'koliaegorov99po-afk') {
+            return res.status(403).json({ error: 'Cannot modify main admin status' });
+        }
         db.run("UPDATE users SET status = ? WHERE username = ?", [newStatus, targetUser], (err) => {
             if (err) return res.status(500).json({ error: err.message });
             res.json({ success: true });
@@ -194,7 +199,7 @@ app.post('/api/admin/set-status', (req, res) => {
 app.post('/api/admin/delete-user', (req, res) => {
     if (!req.session.username) return res.status(401).json({ error: 'Unauthorized' });
     db.get("SELECT status, username FROM users WHERE username = ?", [req.session.username], (err, user) => {
-        if (!user || user.status !== 'admin' || user.username.toLowerCase() !== 'koliaegorov99po-afk') {
+        if (!user || user.status !== 'admin') {
             return res.status(403).json({ error: 'Access denied' });
         }
         const { targetUser } = req.body;
@@ -236,6 +241,7 @@ app.post('/api/admin/add-exchanger', (req, res) => {
                         }
                     });
                 }
+                io.emit('exchangers_updated');
                 res.json({ success: true });
             });
     });
@@ -260,6 +266,7 @@ app.post('/api/admin/edit-exchanger', (req, res) => {
                         }
                     });
                 }
+                io.emit('exchangers_updated');
                 res.json({ success: true });
             });
     });
@@ -272,6 +279,7 @@ app.post('/api/admin/delete-exchanger', (req, res) => {
         const { id } = req.body;
         db.run("DELETE FROM exchangers WHERE id = ?", [id], (err) => {
             if (err) return res.status(500).json({ error: err.message });
+            io.emit('exchangers_updated');
             res.json({ success: true });
         });
     });
@@ -296,6 +304,7 @@ app.post('/api/admin/add-shop', (req, res) => {
                         }
                     });
                 }
+                io.emit('shops_updated');
                 res.json({ success: true });
             });
     });
@@ -320,6 +329,7 @@ app.post('/api/admin/edit-shop', (req, res) => {
                         }
                     });
                 }
+                io.emit('shops_updated');
                 res.json({ success: true });
             });
     });
@@ -332,6 +342,7 @@ app.post('/api/admin/delete-shop', (req, res) => {
         const { id } = req.body;
         db.run("DELETE FROM shops WHERE id = ?", [id], (err) => {
             if (err) return res.status(500).json({ error: err.message });
+            io.emit('shops_updated');
             res.json({ success: true });
         });
     });
@@ -475,7 +486,8 @@ app.get('/', (req, res) => {
                 .like-btn.liked { background: rgba(255,0,85,0.2); border-color: #ff0055; color: #fff; }
 
                 /* Telegram-style interactive input and mention autocomplete dropdown */
-                .chat-input-box { display: flex; gap: 8px; padding-top: 10px; border-top: 1px solid #333; position: relative; align-items: center; }
+                .chat-input-box { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid #333; position: relative; }
+                .chat-input-row { display: flex; gap: 8px; align-items: center; width: 100%; }
                 .chat-input { flex: 1; background: #17212b; border: 1px solid #2b394b; padding: 12px; border-radius: 10px; color: #fff; outline: none; font-size: 0.95em; min-width: 0; }
                 .chat-input:focus { border-color: #6ab2f2; }
                 .action-icon-btn { background: #17212b; border: 1px solid #2b394b; color: #6ab2f2; padding: 10px 14px; border-radius: 10px; cursor: pointer; font-size: 1.1em; transition: 0.2s; }
@@ -525,26 +537,35 @@ app.get('/', (req, res) => {
                 </div>
 
                 <div class="menu-tabs">
-                    <button class="tab-btn active" onclick="switchTab('chat', this)">Игры и Реклама (Чат)</button>
+                    <button class="tab-btn active" onclick="switchTab('chat', this)">Общий Чат (Рефералы, Обменники, Магазины)</button>
                     <button class="tab-btn" onclick="switchTab('exchangers', this)">Обменники</button>
                     <button class="tab-btn" onclick="switchTab('shops', this)">Магазины</button>
                     <button class="tab-btn" onclick="switchTab('profile', this)">Профиль</button>
                 </div>
 
                 <div id="chat" class="section-content active">
-                    <div class="list-box-title">Telegram-стиль Чат (Игры, Общение & Реклама)</div>
+                    <div class="list-box-title">Общий чат платформы (Посты, Фото, Видео)</div>
                     <div id="pinned-banner">
                         <div>📌 <b>Закреп:</b> <span id="pinned-text-content">...</span></div>
                         <button class="admin-action-btn" id="unpin-btn-top" onclick="unpinCurrentMessage()" style="background:#ff0055;color:#fff;border:none;padding:3px 6px;border-radius:4px;cursor:pointer;display:none;font-size:0.75em;">Открепить</button>
                     </div>
                     <div id="messages-box"></div>
                     <div class="chat-input-box">
-                        <button class="action-icon-btn" onclick="toggleEmojiPicker()"><i class="fa-regular fa-face-smile"></i></button>
-                        <div style="position:relative; flex:1; display:flex;">
-                            <input type="text" id="msg-input" class="chat-input" placeholder="Введите сообщение или тегните @..." autocomplete="off" oninput="handleInputTyping(event)">
-                            <div id="mention-dropdown"></div>
+                        <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+                            <input type="text" id="media-url-input" class="chat-input" placeholder="Ссылка на фото или видео (необязательно)" style="font-size:0.85em; padding:8px;" autocomplete="off">
+                            <select id="media-type-select" style="background:#17212b; border:1px solid #2b394b; color:#fff; padding:8px; border-radius:8px; font-size:0.85em; outline:none;">
+                                <option value="image">Фото</option>
+                                <option value="video">Видео</option>
+                            </select>
                         </div>
-                        <button class="action-icon-btn" onclick="sendMessage()"><i class="fa-solid fa-paper-plane"></i></button>
+                        <div class="chat-input-row">
+                            <button class="action-icon-btn" onclick="toggleEmojiPicker()"><i class="fa-regular fa-face-smile"></i></button>
+                            <div style="position:relative; flex:1; display:flex;">
+                                <input type="text" id="msg-input" class="chat-input" placeholder="Написать пост или сообщение, тегнуть @..." autocomplete="off" oninput="handleInputTyping(event)">
+                                <div id="mention-dropdown"></div>
+                            </div>
+                            <button class="action-icon-btn" onclick="sendMessage()"><i class="fa-solid fa-paper-plane"></i></button>
+                        </div>
                         
                         <div id="emoji-picker">
                             <div class="picker-tabs">
@@ -567,12 +588,12 @@ app.get('/', (req, res) => {
                 </div>
 
                 <div id="exchangers" class="section-content">
-                    <div class="list-box-title">Список доверенных обменников</div>
+                    <div class="list-box-title">Комната обменников</div>
                     <div class="exchangers-grid" id="exchangers-list"></div>
                 </div>
 
                 <div id="shops" class="section-content">
-                    <div class="list-box-title">Список доверенных магазинов</div>
+                    <div class="list-box-title">Комната магазинов</div>
                     <div class="shops-grid" id="shops-list"></div>
                 </div>
 
@@ -603,8 +624,8 @@ app.get('/', (req, res) => {
                                 <button class="admin-btn" onclick="updateChatLink()">Изменить ссылку на чат</button>
                             </div>
 
-                            <div id="main-admin-controls" style="background: #000; padding: 10px; border-radius: 6px; margin-bottom: 15px; display:none;">
-                                <h5 style="color: #00eaff; margin-bottom: 5px; font-size:0.85em;">Управление пользователями:</h5>
+                            <div style="background: #000; padding: 10px; border-radius: 6px; margin-bottom: 15px;">
+                                <h5 style="color: #00eaff; margin-bottom: 5px; font-size:0.85em;">Управление администраторами и пользователями:</h5>
                                 <select id="target-user-select"></select>
                                 <select id="new-status-select" style="margin-top:5px;">
                                     <option value="admin">Сделать администратором</option>
@@ -619,7 +640,7 @@ app.get('/', (req, res) => {
                                 <div id="admin-complaints-list" style="font-size: 0.75em; color: #ccc;">Нет жалоб</div>
                             </div>
 
-                            <p style="color: #00eaff; font-size: 0.85em; margin-bottom: 5px;">Добавить / Заменить обменник</p>
+                            <p style="color: #00eaff; font-size: 0.85em; margin-bottom: 5px;">Добавить / Редактировать обменник</p>
                             <input type="hidden" id="edit-ex-id" value="">
                             <input type="text" id="ex-name" placeholder="Название обменника">
                             <input type="text" id="ex-url" placeholder="Ссылка на Telegram">
@@ -633,7 +654,7 @@ app.get('/', (req, res) => {
                             <button class="admin-btn" id="ex-cancel-btn" style="background:#555;color:#fff;display:none;margin-top:5px;" onclick="resetExchangerForm()">Отмена редактирования</button>
 
                             <hr style="border-color: #444; margin: 15px 0 10px 0;">
-                            <p style="color: #00eaff; font-size: 0.85em; margin-bottom: 5px;">Добавить / Заменить магазин</p>
+                            <p style="color: #00eaff; font-size: 0.85em; margin-bottom: 5px;">Добавить / Редактировать магазин</p>
                             <input type="hidden" id="edit-shop-id" value="">
                             <input type="text" id="shop-name" placeholder="Название магазина">
                             <input type="text" id="shop-url" placeholder="Ссылка на Telegram">
@@ -703,7 +724,6 @@ app.get('/', (req, res) => {
                         const container = document.getElementById('my-referrals-list');
                         container.innerHTML = '';
                         
-                        // Обновляем счетчик рефералов в шапке и профиле
                         document.getElementById('top-ref-counter').innerText = refs.length;
                         document.getElementById('ref-counter-badge').innerText = refs.length;
 
@@ -731,18 +751,16 @@ app.get('/', (req, res) => {
                         shopsData = data.shops;
                         
                         if(data.currentAdmin.toLowerCase() === 'koliaegorov99po-afk') {
-                            document.getElementById('main-admin-controls').style.display = 'block';
                             document.getElementById('main-admin-chat-link-box').style.display = 'block';
                             document.getElementById('admin-tg-chat-input').value = data.tgChatLink || '';
-
-                            const select = document.getElementById('target-user-select');
-                            select.innerHTML = '';
-                            data.users.forEach(u => {
-                                if(u.username.toLowerCase() !== 'koliaegorov99po-afk') {
-                                    select.innerHTML += \`<option value="\${u.username}">@\${u.username} (\${u.status})</option>\`;
-                                }
-                            });
                         }
+
+                        const select = document.getElementById('target-user-select');
+                        select.innerHTML = '';
+                        data.users.forEach(u => {
+                            if(data.currentAdmin.toLowerCase() !== 'koliaegorov99po-afk' && u.username.toLowerCase() === 'koliaegorov99po-afk') return;
+                            select.innerHTML += \`<option value="\${u.username}">@\${u.username} (\${u.status})</option>\`;
+                        });
 
                         const compContainer = document.getElementById('admin-complaints-list');
                         compContainer.innerHTML = '';
@@ -784,7 +802,8 @@ app.get('/', (req, res) => {
                         alert('Статус пользователя успешно обновлен!');
                         loadAdminData();
                     } else {
-                        alert('Ошибка изменения статуса');
+                        const errData = await res.json();
+                        alert(errData.error || 'Ошибка изменения статуса');
                     }
                 }
 
@@ -800,7 +819,8 @@ app.get('/', (req, res) => {
                         alert('Пользователь успешно удален!');
                         loadAdminData();
                     } else {
-                        alert('Ошибка удаления');
+                        const errData = await res.json();
+                        alert(errData.error || 'Ошибка удаления');
                     }
                 }
 
@@ -865,9 +885,13 @@ app.get('/', (req, res) => {
                 function sendMessage() {
                     const input = document.getElementById('msg-input');
                     const text = input.value.trim();
-                    if (!text) return;
-                    socket.emit('chat_message', { text, isAd: false });
+                    const mediaUrl = document.getElementById('media-url-input').value.trim();
+                    const mediaType = document.getElementById('media-type-select').value;
+
+                    if (!text && !mediaUrl) return;
+                    socket.emit('chat_message', { text, mediaUrl: mediaUrl || null, mediaType: mediaUrl ? mediaType : null, isAd: false });
                     input.value = '';
+                    document.getElementById('media-url-input').value = '';
                     document.getElementById('mention-dropdown').style.display = 'none';
                 }
 
@@ -879,11 +903,11 @@ app.get('/', (req, res) => {
                 async function sendAdPost(type, name) {
                     const text = prompt(\`Введите рекламный текст от \${type} "\${name}":\`);
                     if(!text) return;
-                    const mediaUrl = prompt('Укажите ссылку на картинку или видео для заставки рекламного поста:', '');
+                    const mediaUrl = prompt('Укажите ссылку на картинку или видео для рекламного поста:', '');
                     const mediaType = mediaUrl && mediaUrl.includes('.mp4') ? 'video' : 'image';
                     
-                    socket.emit('chat_message', { text: \`📢 РЕКЛАМА [\${type}]: \${name}\\n\\n\${text}\`, mediaUrl, mediaType, isAd: true });
-                    alert('Рекламный пост с медиафайлом успешно опубликован в чате!');
+                    socket.emit('chat_message', { text: \`📢 РЕКЛАМА [\${type}]: \${name}\\n\\n\${text}\`, mediaUrl: mediaUrl || null, mediaType: mediaUrl ? mediaType : null, isAd: true });
+                    alert('Рекламный пост успешно опубликован в общем чате!');
                 }
 
                 document.getElementById('msg-input').addEventListener('keypress', (e) => {
@@ -1013,7 +1037,7 @@ app.get('/', (req, res) => {
                         let adminTools = '';
                         if(currentUser && currentUser.status === 'admin') {
                             adminTools = \`
-                                <button class="msg-action-btn" onclick="startEditExchanger(\${ex.id})">Заменить/Ред</button>
+                                <button class="msg-action-btn" onclick="startEditExchanger(\${ex.id})">Редактировать</button>
                                 <button class="msg-action-btn" style="background:#ff3333;color:#fff;border:none;" onclick="deleteExchanger(\${ex.id})">Удалить</button>
                             \`;
                         }
@@ -1050,7 +1074,7 @@ app.get('/', (req, res) => {
                     document.getElementById('ex-post').checked = ex.can_post === 1;
                     document.getElementById('ex-ads').checked = ex.can_ads === 1;
                     
-                    document.getElementById('ex-submit-btn').innerText = 'Сохранить изменения (Заменить)';
+                    document.getElementById('ex-submit-btn').innerText = 'Сохранить изменения';
                     document.getElementById('ex-cancel-btn').style.display = 'block';
                     document.getElementById('admin-section').scrollIntoView({ behavior: 'smooth' });
                 }
@@ -1085,7 +1109,7 @@ app.get('/', (req, res) => {
                         body: JSON.stringify(data)
                     });
                     if(res.ok) {
-                        alert(id ? 'Обменник успешно заменен/обновлен!' : 'Обменник успешно добавлен!');
+                        alert(id ? 'Обменник успешно обновлен!' : 'Обменник успешно добавлен!');
                         resetExchangerForm();
                         loadExchangers();
                         loadAdminData();
@@ -1131,7 +1155,7 @@ app.get('/', (req, res) => {
                         let adminTools = '';
                         if(currentUser && currentUser.status === 'admin') {
                             adminTools = \`
-                                <button class="msg-action-btn" onclick="startEditShop(\${sh.id})">Заменить/Ред</button>
+                                <button class="msg-action-btn" onclick="startEditShop(\${sh.id})">Редактировать</button>
                                 <button class="msg-action-btn" style="background:#ff3333;color:#fff;border:none;" onclick="deleteShop(\${sh.id})">Удалить</button>
                             \`;
                         }
@@ -1168,7 +1192,7 @@ app.get('/', (req, res) => {
                     document.getElementById('shop-post').checked = sh.can_post === 1;
                     document.getElementById('shop-ads').checked = sh.can_ads === 1;
                     
-                    document.getElementById('shop-submit-btn').innerText = 'Сохранить изменения (Заменить)';
+                    document.getElementById('shop-submit-btn').innerText = 'Сохранить изменения';
                     document.getElementById('shop-cancel-btn').style.display = 'block';
                     document.getElementById('admin-section').scrollIntoView({ behavior: 'smooth' });
                 }
@@ -1203,7 +1227,7 @@ app.get('/', (req, res) => {
                         body: JSON.stringify(data)
                     });
                     if(res.ok) {
-                        alert(id ? 'Магазин успешно заменен/обновлен!' : 'Магазин успешно добавлен!');
+                        alert(id ? 'Магазин успешно обновлен!' : 'Магазин успешно добавлен!');
                         resetShopForm();
                         loadShops();
                         loadAdminData();
@@ -1280,6 +1304,18 @@ app.get('/', (req, res) => {
                 socket.on('system_message', (msg) => {
                     appendMessage({ isSystem: true, text: msg.text, timestamp: new Date() });
                     loadStats();
+                });
+
+                socket.on('exchangers_updated', () => {
+                    if(document.getElementById('exchangers').classList.contains('active')) {
+                        loadExchangers();
+                    }
+                });
+
+                socket.on('shops_updated', () => {
+                    if(document.getElementById('shops').classList.contains('active')) {
+                        loadShops();
+                    }
                 });
             </script>
         </body>
