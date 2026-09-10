@@ -1,7 +1,7 @@
-const express = require("express");
+Const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
-const sqlite3 = require("sqlite3").verbose();
+const { Pool } = require("pg");
 const path = require("path");
 const session = require("express-session");
 const bodyParser = require("body-parser");
@@ -24,112 +24,129 @@ if (!fs.existsSync(publicDir)) {
     fs.mkdirSync(publicDir, { recursive: true });
 }
 
-const dbPath = path.resolve(__dirname, "akihabara.db");
-const db = new sqlite3.Database(dbPath, (err) => {
-    if (err) console.error("Ошибка БД:", err.message);
-});
-
 /* =========================================================
-   DATABASE
+   POSTGRESQL DATABASE (SUPABASE)
 ========================================================= */
 
-db.serialize(() => {
-
-    db.run(`
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            status TEXT DEFAULT 'user',
-            avatarUrl TEXT DEFAULT '',
-            referralCode TEXT UNIQUE,
-            invitedBy TEXT DEFAULT '',
-            invites INTEGER DEFAULT 0,
-            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    `);
-
-    db.run(`
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT NOT NULL,
-            avatarUrl TEXT DEFAULT '',
-            text TEXT DEFAULT '',
-            mediaUrl TEXT DEFAULT '',
-            mediaType TEXT DEFAULT '',
-            isAd INTEGER DEFAULT 0,
-            isPinned INTEGER DEFAULT 0,
-            likes INTEGER DEFAULT 0,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    `);
-
-    db.run(`
-        CREATE TABLE IF NOT EXISTS message_likes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            messageId INTEGER NOT NULL,
-            username TEXT NOT NULL,
-            UNIQUE(messageId, username)
-        )
-    `);
-
-    db.run(`
-        CREATE TABLE IF NOT EXISTS exchangers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            photoUrl TEXT DEFAULT '',
-            telegramUrl TEXT DEFAULT '',
-            description TEXT DEFAULT '',
-            owner TEXT DEFAULT '',
-            can_post INTEGER DEFAULT 1,
-            can_ads INTEGER DEFAULT 1
-        )
-    `);
-
-    db.run(`
-        CREATE TABLE IF NOT EXISTS shops (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            photoUrl TEXT DEFAULT '',
-            telegramUrl TEXT DEFAULT '',
-            description TEXT DEFAULT '',
-            owner TEXT DEFAULT '',
-            can_post INTEGER DEFAULT 1,
-            can_ads INTEGER DEFAULT 1
-        )
-    `);
-
-    db.run(`
-        CREATE TABLE IF NOT EXISTS complaints (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            target_type TEXT NOT NULL,
-            target_name TEXT NOT NULL,
-            complainant TEXT NOT NULL,
-            reason TEXT DEFAULT '',
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    `);
-
-    db.run(`
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT DEFAULT ''
-        )
-    `);
-
-    db.run(`
-        INSERT OR IGNORE INTO settings(key, value)
-        VALUES('telegram_chat', ?)
-    `, [DEFAULT_TELEGRAM_CHAT]);
-
-    db.run(`
-        INSERT OR IGNORE INTO users
-        (username, status, avatarUrl, referralCode)
-        VALUES (?, 'main_admin', '', ?)
-    `, [
-        MAIN_ADMIN,
-        MAIN_ADMIN
-    ]);
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+        rejectUnauthorized: false
+    }
 });
+
+pool.connect((err, client, release) => {
+    if (err) {
+        return console.error("Ошибка подключения к базе данных Supabase:", err.stack);
+    }
+    console.log("Успешное подключение к постоянной базе данных Supabase!");
+    release();
+});
+
+// Инициализация таблиц для PostgreSQL
+async function initDatabase() {
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                status TEXT DEFAULT 'user',
+                avatarUrl TEXT DEFAULT '',
+                referralCode TEXT UNIQUE,
+                invitedBy TEXT DEFAULT '',
+                invites INTEGER DEFAULT 0,
+                createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS messages (
+                id SERIAL PRIMARY KEY,
+                username TEXT NOT NULL,
+                avatarUrl TEXT DEFAULT '',
+                text TEXT DEFAULT '',
+                mediaUrl TEXT DEFAULT '',
+                mediaType TEXT DEFAULT '',
+                isAd INTEGER DEFAULT 0,
+                isPinned INTEGER DEFAULT 0,
+                likes INTEGER DEFAULT 0,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS message_likes (
+                id SERIAL PRIMARY KEY,
+                messageId INTEGER NOT NULL,
+                username TEXT NOT NULL,
+                UNIQUE(messageId, username)
+            )
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS exchangers (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                photoUrl TEXT DEFAULT '',
+                telegramUrl TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                owner TEXT DEFAULT '',
+                can_post INTEGER DEFAULT 1,
+                can_ads INTEGER DEFAULT 1
+            )
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS shops (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                photoUrl TEXT DEFAULT '',
+                telegramUrl TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                owner TEXT DEFAULT '',
+                can_post INTEGER DEFAULT 1,
+                can_ads INTEGER DEFAULT 1
+            )
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS complaints (
+                id SERIAL PRIMARY KEY,
+                target_type TEXT NOT NULL,
+                target_name TEXT NOT NULL,
+                complainant TEXT NOT NULL,
+                reason TEXT DEFAULT '',
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT DEFAULT ''
+            )
+        `);
+
+        await pool.query(`
+            INSERT INTO settings(key, value)
+            VALUES('telegram_chat', $1)
+            ON CONFLICT (key) DO NOTHING
+        `, [DEFAULT_TELEGRAM_CHAT]);
+
+        await pool.query(`
+            INSERT INTO users
+            (username, status, avatarUrl, referralCode)
+            VALUES ($1, 'main_admin', '', $2)
+            ON CONFLICT (username) DO NOTHING
+        `, [MAIN_ADMIN, MAIN_ADMIN]);
+
+        console.log("Таблицы базы данных успешно инициализированы.");
+    } catch (err) {
+        console.error("Ошибка при инициализации таблиц:", err);
+    }
+}
+
+initDatabase();
 
 /* =========================================================
    HELPERS
@@ -150,12 +167,13 @@ function normalizeUsername(username) {
         .slice(0, 32);
 }
 
-function getUser(username, callback) {
-    db.get(
-        "SELECT * FROM users WHERE username = ?",
-        [username],
-        callback
-    );
+async function getUser(username, callback) {
+    try {
+        const result = await pool.query("SELECT * FROM users WHERE username = $1", [username]);
+        callback(null, result.rows[0] || null);
+    } catch (err) {
+        callback(err, null);
+    }
 }
 
 function isMainAdmin(username) {
@@ -224,8 +242,7 @@ io.use((socket, next) => {
    LOGIN
 ========================================================= */
 
-app.post("/login", (req, res) => {
-
+app.post("/login", async (req, res) => {
     const username = normalizeUsername(req.body.username);
     const ref = normalizeUsername(req.body.ref);
 
@@ -243,88 +260,60 @@ app.post("/login", (req, res) => {
         });
     }
 
-    db.get(
-        "SELECT * FROM users WHERE username = ?",
-        [username],
-        (err, existingUser) => {
+    try {
+        const existingResult = await pool.query("SELECT * FROM users WHERE username = $1", [username]);
+        if (existingResult.rows.length > 0) {
+            const existingUser = existingResult.rows[0];
+            req.session.username = existingUser.username;
+            return res.json({
+                ok: true,
+                user: existingUser
+            });
+        }
 
-            if (err) {
-                return res.status(500).json({
-                    ok: false,
-                    error: "Ошибка базы данных"
-                });
-            }
+        const referralCode = generateReferralCode(username);
+        const insertResult = await pool.query(
+            `
+            INSERT INTO users
+            (username, status, referralCode, invitedBy)
+            VALUES ($1, 'user', $2, $3)
+            RETURNING *
+            `,
+            [username, referralCode, ref]
+        );
 
-            if (existingUser) {
-                req.session.username = existingUser.username;
-                return res.json({
-                    ok: true,
-                    user: existingUser
-                });
-            }
+        const newUser = insertResult.rows[0];
 
-            const referralCode = generateReferralCode(username);
-
-            db.run(
+        if (ref) {
+            await pool.query(
                 `
-                INSERT INTO users
-                (username, status, referralCode, invitedBy)
-                VALUES (?, 'user', ?, ?)
+                UPDATE users
+                SET invites = invites + 1
+                WHERE username = $1
                 `,
-                [
-                    username,
-                    referralCode,
-                    ref
-                ],
-                function (insertErr) {
-
-                    if (insertErr) {
-                        return res.status(500).json({
-                            ok: false,
-                            error: "Не удалось создать пользователя"
-                        });
-                    }
-
-                    if (ref) {
-                        db.run(
-                            `
-                            UPDATE users
-                            SET invites = invites + 1
-                            WHERE username = ?
-                            `,
-                            [ref]
-                        );
-                    }
-
-                    req.session.username = username;
-
-                    db.get(
-                        "SELECT * FROM users WHERE id = ?",
-                        [this.lastID],
-                        (e, user) => {
-
-                            if (e) {
-                                return res.json({
-                                    ok: true
-                                });
-                            }
-
-                            io.emit("system_message", {
-                                text: `${username} присоединился к AKIHABARA`
-                            });
-
-                            io.emit("users_updated");
-
-                            res.json({
-                                ok: true,
-                                user
-                            });
-                        }
-                    );
-                }
+                [ref]
             );
         }
-    );
+
+        req.session.username = username;
+
+        io.emit("system_message", {
+            text: `${username} присоединился к AKIHABARA`
+        });
+
+        io.emit("users_updated");
+
+        res.json({
+            ok: true,
+            user: newUser
+        });
+    } catch (err) {
+        console.error("Ошибка при входе/регистрации:", err);
+        return res.status(500).json({
+            ok: false,
+            error: "Ошибка базы данных или создания пользователя"
+        });
+    }
 });
 
 app.post("/logout", (req, res) => {
@@ -360,66 +349,52 @@ app.get("/api/user", (req, res) => {
     });
 });
 
-app.get("/api/stats", (req, res) => {
-    db.get(
-        "SELECT COUNT(*) AS total FROM users",
-        [],
-        (err, users) => {
-            db.get(
-                "SELECT COUNT(*) AS total FROM users WHERE invitedBy != ''",
-                [],
-                (err2, referrals) => {
-                    res.json({
-                        users: users ? users.total : 0,
-                        referrals: referrals ? referrals.total : 0
-                    });
-                }
-            );
-        }
-    );
+app.get("/api/stats", async (req, res) => {
+    try {
+        const usersResult = await pool.query("SELECT COUNT(*) AS total FROM users");
+        const refsResult = await pool.query("SELECT COUNT(*) AS total FROM users WHERE invitedBy != ''");
+        res.json({
+            users: usersResult.rows[0] ? Number(usersResult.rows[0].total) : 0,
+            referrals: refsResult.rows[0] ? Number(refsResult.rows[0].total) : 0
+        });
+    } catch (err) {
+        res.json({ users: 0, referrals: 0 });
+    }
 });
 
-app.get("/api/users", (req, res) => {
-    db.all(
-        `
-        SELECT id, username, status, avatarUrl,
-               referralCode, invitedBy, invites, createdAt
-        FROM users
-        ORDER BY id DESC
-        `,
-        [],
-        (err, rows) => {
-            if (err) {
-                return res.status(500).json({
-                    ok: false
-                });
-            }
-
-            res.json({
-                ok: true,
-                users: rows
-            });
-        }
-    );
+app.get("/api/users", async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT id, username, status, avatarUrl,
+                   referralCode, invitedBy, invites, createdAt
+            FROM users
+            ORDER BY id DESC
+        `);
+        res.json({
+            ok: true,
+            users: result.rows
+        });
+    } catch (err) {
+        res.status(500).json({ ok: false });
+    }
 });
 
 /* =========================================================
    TELEGRAM CHAT
 ========================================================= */
 
-app.get("/api/telegram-chat", (req, res) => {
-    db.get(
-        "SELECT value FROM settings WHERE key = 'telegram_chat'",
-        [],
-        (err, row) => {
-            res.json({
-                url: row ? row.value : DEFAULT_TELEGRAM_CHAT
-            });
-        }
-    );
+app.get("/api/telegram-chat", async (req, res) => {
+    try {
+        const result = await pool.query("SELECT value FROM settings WHERE key = 'telegram_chat'");
+        res.json({
+            url: result.rows[0] ? result.rows[0].value : DEFAULT_TELEGRAM_CHAT
+        });
+    } catch (err) {
+        res.json({ url: DEFAULT_TELEGRAM_CHAT });
+    }
 });
 
-app.post("/api/admin/telegram-chat", (req, res) => {
+app.post("/api/admin/telegram-chat", async (req, res) => {
     const username = req.session.username;
 
     if (!isMainAdmin(username)) {
@@ -438,59 +413,49 @@ app.post("/api/admin/telegram-chat", (req, res) => {
         });
     }
 
-    db.run(
-        `
-        INSERT INTO settings(key,value)
-        VALUES('telegram_chat',?)
-        ON CONFLICT(key)
-        DO UPDATE SET value=excluded.value
-        `,
-        [url],
-        err => {
-            if (err) {
-                return res.status(500).json({
-                    ok: false
-                });
-            }
+    try {
+        await pool.query(
+            `
+            INSERT INTO settings(key, value)
+            VALUES('telegram_chat', $1)
+            ON CONFLICT (key)
+            DO UPDATE SET value = EXCLUDED.value
+            `,
+            [url]
+        );
 
-            io.emit("telegram_chat_updated", url);
+        io.emit("telegram_chat_updated", url);
 
-            res.json({
-                ok: true,
-                url
-            });
-        }
-    );
+        res.json({
+            ok: true,
+            url
+        });
+    } catch (err) {
+        res.status(500).json({ ok: false });
+    }
 });
 
 /* =========================================================
    ADMIN MANAGEMENT
 ========================================================= */
 
-app.get("/api/admins", (req, res) => {
-    db.all(
-        `
-        SELECT id, username, status, avatarUrl, createdAt
-        FROM users
-        WHERE status IN ('admin','main_admin')
-        ORDER BY
-            CASE WHEN status = 'main_admin' THEN 0 ELSE 1 END,
-            id ASC
-        `,
-        [],
-        (err, admins) => {
-            if (err) {
-                return res.status(500).json({
-                    ok: false
-                });
-            }
-
-            res.json({
-                ok: true,
-                admins
-            });
-        }
-    );
+app.get("/api/admins", async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT id, username, status, avatarUrl, createdAt
+            FROM users
+            WHERE status IN ('admin','main_admin')
+            ORDER BY
+                CASE WHEN status = 'main_admin' THEN 0 ELSE 1 END,
+                id ASC
+        `);
+        res.json({
+            ok: true,
+            admins: result.rows
+        });
+    } catch (err) {
+        res.status(500).json({ ok: false });
+    }
 });
 
 app.post("/api/admins/add", (req, res) => {
@@ -510,43 +475,30 @@ app.post("/api/admins/add", (req, res) => {
         });
     }
 
-    db.get(
-        "SELECT * FROM users WHERE username = ?",
-        [username],
-        (err, user) => {
-            if (err) {
-                return res.status(500).json({
-                    ok: false
-                });
-            }
+    getUser(username, async (err, user) => {
+        if (err) {
+            return res.status(500).json({ ok: false });
+        }
 
+        try {
             if (!user) {
                 const referralCode = generateReferralCode(username);
-
-                return db.run(
+                await pool.query(
                     `
                     INSERT INTO users
-                    (username,status,referralCode)
-                    VALUES (?, 'admin', ?)
+                    (username, status, referralCode)
+                    VALUES ($1, 'admin', $2)
                     `,
-                    [username, referralCode],
-                    insertErr => {
-                        if (insertErr) {
-                            return res.status(500).json({
-                                ok: false,
-                                error: "Не удалось добавить администратора"
-                            });
-                        }
-
-                        io.emit("admins_updated");
-                        io.emit("users_updated");
-
-                        res.json({
-                            ok: true,
-                            message: "Администратор добавлен"
-                        });
-                    }
+                    [username, referralCode]
                 );
+
+                io.emit("admins_updated");
+                io.emit("users_updated");
+
+                return res.json({
+                    ok: true,
+                    message: "Администратор добавлен"
+                });
             }
 
             if (user.status === "main_admin") {
@@ -556,34 +508,29 @@ app.post("/api/admins/add", (req, res) => {
                 });
             }
 
-            db.run(
+            await pool.query(
                 `
                 UPDATE users
                 SET status = 'admin'
-                WHERE username = ?
+                WHERE username = $1
                 `,
-                [username],
-                updateErr => {
-                    if (updateErr) {
-                        return res.status(500).json({
-                            ok: false
-                        });
-                    }
-
-                    io.emit("admins_updated");
-                    io.emit("users_updated");
-
-                    res.json({
-                        ok: true,
-                        message: "Пользователь назначен администратором"
-                    });
-                }
+                [username]
             );
+
+            io.emit("admins_updated");
+            io.emit("users_updated");
+
+            res.json({
+                ok: true,
+                message: "Пользователь назначен администратором"
+            });
+        } catch (updateErr) {
+            res.status(500).json({ ok: false, error: "Ошибка при добавлении администратора" });
         }
-    );
+    });
 });
 
-app.post("/api/admins/remove", (req, res) => {
+app.post("/api/admins/remove", async (req, res) => {
     if (!isMainAdmin(req.session.username)) {
         return res.status(403).json({
             ok: false,
@@ -600,31 +547,26 @@ app.post("/api/admins/remove", (req, res) => {
         });
     }
 
-    db.run(
-        `
-        UPDATE users
-        SET status = 'user'
-        WHERE username = ?
-        `,
-        [username],
-        err => {
-            if (err) {
-                return res.status(500).json({
-                    ok: false
-                });
-            }
+    try {
+        await pool.query(
+            `
+            UPDATE users
+            SET status = 'user'
+            WHERE username = $1
+            `,
+            [username]
+        );
 
-            io.emit("admins_updated");
-            io.emit("users_updated");
+        io.emit("admins_updated");
+        io.emit("users_updated");
 
-            res.json({
-                ok: true
-            });
-        }
-    );
+        res.json({ ok: true });
+    } catch (err) {
+        res.status(500).json({ ok: false });
+    }
 });
 
-app.post("/api/admins/edit", (req, res) => {
+app.post("/api/admins/edit", async (req, res) => {
     if (!isMainAdmin(req.session.username)) {
         return res.status(403).json({
             ok: false,
@@ -649,37 +591,31 @@ app.post("/api/admins/edit", (req, res) => {
         });
     }
 
-    db.run(
-        `
-        UPDATE users
-        SET username = ?
-        WHERE username = ?
-        AND status = 'admin'
-        `,
-        [newUsername, oldUsername],
-        function (err) {
-            if (err) {
-                return res.status(500).json({
-                    ok: false,
-                    error: "Не удалось изменить администратора"
-                });
-            }
+    try {
+        const result = await pool.query(
+            `
+            UPDATE users
+            SET username = $1
+            WHERE username = $2
+            AND status = 'admin'
+            `,
+            [newUsername, oldUsername]
+        );
 
-            if (this.changes === 0) {
-                return res.status(404).json({
-                    ok: false,
-                    error: "Администратор не найден"
-                });
-            }
-
-            io.emit("admins_updated");
-            io.emit("users_updated");
-
-            res.json({
-                ok: true
+        if (result.rowCount === 0) {
+            return res.status(404).json({
+                ok: false,
+                error: "Администратор не найден"
             });
         }
-    );
+
+        io.emit("admins_updated");
+        io.emit("users_updated");
+
+        res.json({ ok: true });
+    } catch (err) {
+        res.status(500).json({ ok: false, error: "Не удалось изменить администратора" });
+    }
 });
 
 /* =========================================================
@@ -689,7 +625,7 @@ app.post("/api/admins/edit", (req, res) => {
 app.post("/api/admin/user-status", (req, res) => {
     const admin = req.session.username;
 
-    isAdmin(admin, allowed => {
+    isAdmin(admin, async allowed => {
         if (!allowed) {
             return res.status(403).json({
                 ok: false,
@@ -701,9 +637,7 @@ app.post("/api/admin/user-status", (req, res) => {
         const status = String(req.body.status || "user");
 
         if (!["user", "admin"].includes(status)) {
-            return res.status(400).json({
-                ok: false
-            });
+            return res.status(400).json({ ok: false });
         }
 
         if (username === MAIN_ADMIN && status !== "main_admin") {
@@ -713,35 +647,27 @@ app.post("/api/admin/user-status", (req, res) => {
             });
         }
 
-        db.run(
-            `
-            UPDATE users
-            SET status = ?
-            WHERE username = ?
-            `,
-            [
-                status,
-                username
-            ],
-            err => {
-                if (err) {
-                    return res.status(500).json({
-                        ok: false
-                    });
-                }
+        try {
+            await pool.query(
+                `
+                UPDATE users
+                SET status = $1
+                WHERE username = $2
+                `,
+                [status, username]
+            );
 
-                io.emit("users_updated");
-                io.emit("admins_updated");
+            io.emit("users_updated");
+            io.emit("admins_updated");
 
-                res.json({
-                    ok: true
-                });
-            }
-        );
+            res.json({ ok: true });
+        } catch (err) {
+            res.status(500).json({ ok: false });
+        }
     });
 });
 
-app.post("/api/admin/set-user-avatar", (req, res) => {
+app.post("/api/admin/set-user-avatar", async (req, res) => {
     if (!isMainAdmin(req.session.username)) {
         return res.status(403).json({
             ok: false,
@@ -752,25 +678,24 @@ app.post("/api/admin/set-user-avatar", (req, res) => {
     const username = normalizeUsername(req.body.username);
     const avatarUrl = String(req.body.avatarUrl || "").trim().slice(0, 2048);
 
-    db.run(
-        `
-        UPDATE users
-        SET avatarUrl = ?
-        WHERE username = ?
-        `,
-        [avatarUrl, username],
-        err => {
-            if (err) {
-                return res.status(500).json({ ok: false });
-            }
-            io.emit("users_updated");
-            io.emit("admins_updated");
-            res.json({ ok: true });
-        }
-    );
+    try {
+        await pool.query(
+            `
+            UPDATE users
+            SET avatarUrl = $1
+            WHERE username = $2
+            `,
+            [avatarUrl, username]
+        );
+        io.emit("users_updated");
+        io.emit("admins_updated");
+        res.json({ ok: true });
+    } catch (err) {
+        res.status(500).json({ ok: false });
+    }
 });
 
-app.post("/api/admin/delete-user", (req, res) => {
+app.post("/api/admin/delete-user", async (req, res) => {
     const admin = req.session.username;
 
     if (!isMainAdmin(admin)) {
@@ -789,125 +714,103 @@ app.post("/api/admin/delete-user", (req, res) => {
         });
     }
 
-    db.run(
-        "DELETE FROM users WHERE username = ?",
-        [username],
-        err => {
-            if (err) {
-                return res.status(500).json({
-                    ok: false
-                });
-            }
+    try {
+        await pool.query("DELETE FROM users WHERE username = $1", [username]);
 
-            io.emit("users_updated");
-            io.emit("admins_updated");
+        io.emit("users_updated");
+        io.emit("admins_updated");
 
-            res.json({
-                ok: true
-            });
-        }
-    );
+        res.json({ ok: true });
+    } catch (err) {
+        res.status(500).json({ ok: false });
+    }
 });
 
 /* =========================================================
    REFERRALS
 ========================================================= */
 
-app.get("/api/referrals", (req, res) => {
+app.get("/api/referrals", async (req, res) => {
     if (!req.session.username) {
-        return res.status(401).json({
-            ok: false
-        });
+        return res.status(401).json({ ok: false });
     }
 
-    db.all(
-        `
-        SELECT username, status, createdAt
-        FROM users
-        WHERE invitedBy = ?
-        ORDER BY id DESC
-        `,
-        [req.session.username],
-        (err, rows) => {
-            if (err) {
-                return res.status(500).json({
-                    ok: false
-                });
-            }
+    try {
+        const result = await pool.query(
+            `
+            SELECT username, status, createdAt
+            FROM users
+            WHERE invitedBy = $1
+            ORDER BY id DESC
+            `,
+            [req.session.username]
+        );
 
-            res.json({
-                ok: true,
-                referrals: rows
-            });
-        }
-    );
+        res.json({
+            ok: true,
+            referrals: result.rows
+        });
+    } catch (err) {
+        res.status(500).json({ ok: false });
+    }
 });
 
 /* =========================================================
    PROFILE
 ========================================================= */
 
-app.post("/api/profile/avatar", (req, res) => {
+app.post("/api/profile/avatar", async (req, res) => {
     if (!req.session.username) {
-        return res.status(401).json({
-            ok: false
-        });
+        return res.status(401).json({ ok: false });
     }
 
     const avatarUrl = String(
         req.body.avatarUrl || ""
     ).trim().slice(0, 2048);
 
-    db.run(
-        `
-        UPDATE users
-        SET avatarUrl = ?
-        WHERE username = ?
-        `,
-        [
-            avatarUrl,
-            req.session.username
-        ],
-        err => {
-            if (err) {
-                return res.status(500).json({
-                    ok: false
-                });
-            }
+    try {
+        await pool.query(
+            `
+            UPDATE users
+            SET avatarUrl = $1
+            WHERE username = $2
+            `,
+            [avatarUrl, req.session.username]
+        );
 
-            io.emit("users_updated");
+        io.emit("users_updated");
 
-            res.json({
-                ok: true,
-                avatarUrl
-            });
-        }
-    );
+        res.json({
+            ok: true,
+            avatarUrl
+        });
+    } catch (err) {
+        res.status(500).json({ ok: false });
+    }
 });
 
 /* =========================================================
    EXCHANGERS
 ========================================================= */
 
-app.get("/api/exchangers", (req, res) => {
-    db.all(
-        `
-        SELECT *
-        FROM exchangers
-        ORDER BY id DESC
-        `,
-        [],
-        (err, rows) => {
-            res.json({
-                ok: !err,
-                exchangers: rows || []
-            });
-        }
-    );
+app.get("/api/exchangers", async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT *
+            FROM exchangers
+            ORDER BY id DESC
+        `);
+        res.json({
+            ok: true,
+            exchangers: result.rows || []
+        });
+    } catch (err) {
+        res.json({ ok: false, exchangers: [] });
+    }
 });
 
 app.post("/api/exchangers/add", (req, res) => {
-    isAdmin(req.session.username, allowed => {
+    isAdmin(req.session.username, async allowed => {
         if (!allowed) {
             return res.status(403).json({
                 ok: false,
@@ -934,44 +837,37 @@ app.post("/api/exchangers/add", (req, res) => {
 
         const targetOwner = isMainAdmin(req.session.username) && owner ? normalizeUsername(owner) : req.session.username;
 
-        db.run(
-            `
-            INSERT INTO exchangers
-            (name,photoUrl,telegramUrl,description,owner,can_post,can_ads)
-            VALUES (?,?,?,?,?,?,?)
-            `,
-            [
-                String(name).trim(),
-                String(photoUrl || "").trim().slice(0, 2048),
-                String(telegramUrl || "").trim().slice(0, 500),
-                String(description || "").trim().slice(0, 2000),
-                targetOwner,
-                can_post ? 1 : 0,
-                can_ads ? 1 : 0
-            ],
-            err => {
-                if (err) {
-                    return res.status(500).json({
-                        ok: false
-                    });
-                }
+        try {
+            await pool.query(
+                `
+                INSERT INTO exchangers
+                (name, photoUrl, telegramUrl, description, owner, can_post, can_ads)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                `,
+                [
+                    String(name).trim(),
+                    String(photoUrl || "").trim().slice(0, 2048),
+                    String(telegramUrl || "").trim().slice(0, 500),
+                    String(description || "").trim().slice(0, 2000),
+                    targetOwner,
+                    can_post ? 1 : 0,
+                    can_ads ? 1 : 0
+                ]
+            );
 
-                io.emit("exchangers_updated");
+            io.emit("exchangers_updated");
 
-                res.json({
-                    ok: true
-                });
-            }
-        );
+            res.json({ ok: true });
+        } catch (err) {
+            res.status(500).json({ ok: false });
+        }
     });
 });
 
 app.post("/api/exchangers/edit", (req, res) => {
-    isAdmin(req.session.username, allowed => {
+    isAdmin(req.session.username, async allowed => {
         if (!allowed) {
-            return res.status(403).json({
-                ok: false
-            });
+            return res.status(403).json({ ok: false });
         }
 
         const id = Number(req.body.id);
@@ -985,76 +881,60 @@ app.post("/api/exchangers/edit", (req, res) => {
             can_ads
         } = req.body;
 
-        const updateOwnerQuery = isMainAdmin(req.session.username) && owner ? ", owner = ?" : "";
-        const queryParams = [
-            String(name || "").trim(),
-            String(photoUrl || "").trim().slice(0, 2048),
-            String(telegramUrl || "").trim().slice(0, 500),
-            String(description || "").trim().slice(0, 2000),
-            can_post ? 1 : 0,
-            can_ads ? 1 : 0
-        ];
+        try {
+            let updateOwnerQuery = "";
+            let queryParams = [
+                String(name || "").trim(),
+                String(photoUrl || "").trim().slice(0, 2048),
+                String(telegramUrl || "").trim().slice(0, 500),
+                String(description || "").trim().slice(0, 2000),
+                can_post ? 1 : 0,
+                can_ads ? 1 : 0
+            ];
 
-        if (isMainAdmin(req.session.username) && owner) {
-            queryParams.push(normalizeUsername(owner));
-        }
-        queryParams.push(id);
-
-        db.run(
-            `
-            UPDATE exchangers
-            SET name = ?,
-                photoUrl = ?,
-                telegramUrl = ?,
-                description = ?,
-                can_post = ?,
-                can_ads = ?
-                ${updateOwnerQuery}
-            WHERE id = ?
-            `,
-            queryParams,
-            err => {
-                if (err) {
-                    return res.status(500).json({
-                        ok: false
-                    });
-                }
-
-                io.emit("exchangers_updated");
-
-                res.json({
-                    ok: true
-                });
+            if (isMainAdmin(req.session.username) && owner) {
+                queryParams.push(normalizeUsername(owner));
+                updateOwnerQuery = `, owner = $${queryParams.length}`;
             }
-        );
+            queryParams.push(id);
+
+            await pool.query(
+                `
+                UPDATE exchangers
+                SET name = $1,
+                    photoUrl = $2,
+                    telegramUrl = $3,
+                    description = $4,
+                    can_post = $5,
+                    can_ads = $6
+                    ${updateOwnerQuery}
+                WHERE id = $${queryParams.length}
+                `,
+                queryParams
+            );
+
+            io.emit("exchangers_updated");
+
+            res.json({ ok: true });
+        } catch (err) {
+            res.status(500).json({ ok: false });
+        }
     });
 });
 
 app.post("/api/exchangers/delete", (req, res) => {
-    isAdmin(req.session.username, allowed => {
+    isAdmin(req.session.username, async allowed => {
         if (!allowed) {
-            return res.status(403).json({
-                ok: false
-            });
+            return res.status(403).json({ ok: false });
         }
 
-        db.run(
-            "DELETE FROM exchangers WHERE id = ?",
-            [Number(req.body.id)],
-            err => {
-                if (err) {
-                    return res.status(500).json({
-                        ok: false
-                    });
-                }
-
-                io.emit("exchangers_updated");
-
-                res.json({
-                    ok: true
-                });
-            }
-        );
+        try {
+            await pool.query("DELETE FROM exchangers WHERE id = $1", [Number(req.body.id)]);
+            io.emit("exchangers_updated");
+            res.json({ ok: true });
+        } catch (err) {
+            res.status(500).json({ ok: false });
+        }
     });
 });
 
@@ -1062,25 +942,24 @@ app.post("/api/exchangers/delete", (req, res) => {
    SHOPS
 ========================================================= */
 
-app.get("/api/shops", (req, res) => {
-    db.all(
-        `
-        SELECT *
-        FROM shops
-        ORDER BY id DESC
-        `,
-        [],
-        (err, rows) => {
-            res.json({
-                ok: !err,
-                shops: rows || []
-            });
-        }
-    );
+app.get("/api/shops", async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT *
+            FROM shops
+            ORDER BY id DESC
+        `);
+        res.json({
+            ok: true,
+            shops: result.rows || []
+        });
+    } catch (err) {
+        res.json({ ok: false, shops: [] });
+    }
 });
 
 app.post("/api/shops/add", (req, res) => {
-    isAdmin(req.session.username, allowed => {
+    isAdmin(req.session.username, async allowed => {
         if (!allowed) {
             return res.status(403).json({
                 ok: false,
@@ -1107,44 +986,37 @@ app.post("/api/shops/add", (req, res) => {
 
         const targetOwner = isMainAdmin(req.session.username) && owner ? normalizeUsername(owner) : req.session.username;
 
-        db.run(
-            `
-            INSERT INTO shops
-            (name,photoUrl,telegramUrl,description,owner,can_post,can_ads)
-            VALUES (?,?,?,?,?,?,?)
-            `,
-            [
-                String(name).trim(),
-                String(photoUrl || "").trim().slice(0, 2048),
-                String(telegramUrl || "").trim().slice(0, 500),
-                String(description || "").trim().slice(0, 2000),
-                targetOwner,
-                can_post ? 1 : 0,
-                can_ads ? 1 : 0
-            ],
-            err => {
-                if (err) {
-                    return res.status(500).json({
-                        ok: false
-                    });
-                }
+        try {
+            await pool.query(
+                `
+                INSERT INTO shops
+                (name, photoUrl, telegramUrl, description, owner, can_post, can_ads)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                `,
+                [
+                    String(name).trim(),
+                    String(photoUrl || "").trim().slice(0, 2048),
+                    String(telegramUrl || "").trim().slice(0, 500),
+                    String(description || "").trim().slice(0, 2000),
+                    targetOwner,
+                    can_post ? 1 : 0,
+                    can_ads ? 1 : 0
+                ]
+            );
 
-                io.emit("shops_updated");
+            io.emit("shops_updated");
 
-                res.json({
-                    ok: true
-                });
-            }
-        );
+            res.json({ ok: true });
+        } catch (err) {
+            res.status(500).json({ ok: false });
+        }
     });
 });
 
 app.post("/api/shops/edit", (req, res) => {
-    isAdmin(req.session.username, allowed => {
+    isAdmin(req.session.username, async allowed => {
         if (!allowed) {
-            return res.status(403).json({
-                ok: false
-            });
+            return res.status(403).json({ ok: false });
         }
 
         const {
@@ -1157,76 +1029,60 @@ app.post("/api/shops/edit", (req, res) => {
             can_ads
         } = req.body;
 
-        const updateOwnerQuery = isMainAdmin(req.session.username) && owner ? ", owner = ?" : "";
-        const queryParams = [
-            String(name || "").trim(),
-            String(photoUrl || "").trim().slice(0, 2048),
-            String(telegramUrl || "").trim().slice(0, 500),
-            String(description || "").trim().slice(0, 2000),
-            can_post ? 1 : 0,
-            can_ads ? 1 : 0
-        ];
+        try {
+            let updateOwnerQuery = "";
+            let queryParams = [
+                String(name || "").trim(),
+                String(photoUrl || "").trim().slice(0, 2048),
+                String(telegramUrl || "").trim().slice(0, 500),
+                String(description || "").trim().slice(0, 2000),
+                can_post ? 1 : 0,
+                can_ads ? 1 : 0
+            ];
 
-        if (isMainAdmin(req.session.username) && owner) {
-            queryParams.push(normalizeUsername(owner));
-        }
-        queryParams.push(Number(req.body.id));
-
-        db.run(
-            `
-            UPDATE shops
-            SET name = ?,
-                photoUrl = ?,
-                telegramUrl = ?,
-                description = ?,
-                can_post = ?,
-                can_ads = ?
-                ${updateOwnerQuery}
-            WHERE id = ?
-            `,
-            queryParams,
-            err => {
-                if (err) {
-                    return res.status(500).json({
-                        ok: false
-                    });
-                }
-
-                io.emit("shops_updated");
-
-                res.json({
-                    ok: true
-                });
+            if (isMainAdmin(req.session.username) && owner) {
+                queryParams.push(normalizeUsername(owner));
+                updateOwnerQuery = `, owner = $${queryParams.length}`;
             }
-        );
+            queryParams.push(Number(req.body.id));
+
+            await pool.query(
+                `
+                UPDATE shops
+                SET name = $1,
+                    photoUrl = $2,
+                    telegramUrl = $3,
+                    description = $4,
+                    can_post = $5,
+                    can_ads = $6
+                    ${updateOwnerQuery}
+                WHERE id = $${queryParams.length}
+                `,
+                queryParams
+            );
+
+            io.emit("shops_updated");
+
+            res.json({ ok: true });
+        } catch (err) {
+            res.status(500).json({ ok: false });
+        }
     });
 });
 
 app.post("/api/shops/delete", (req, res) => {
-    isAdmin(req.session.username, allowed => {
+    isAdmin(req.session.username, async allowed => {
         if (!allowed) {
-            return res.status(403).json({
-                ok: false
-            });
+            return res.status(403).json({ ok: false });
         }
 
-        db.run(
-            "DELETE FROM shops WHERE id = ?",
-            [Number(req.body.id)],
-            err => {
-                if (err) {
-                    return res.status(500).json({
-                        ok: false
-                    });
-                }
-
-                io.emit("shops_updated");
-
-                res.json({
-                    ok: true
-                });
-            }
-        );
+        try {
+            await pool.query("DELETE FROM shops WHERE id = $1", [Number(req.body.id)]);
+            io.emit("shops_updated");
+            res.json({ ok: true });
+        } catch (err) {
+            res.status(500).json({ ok: false });
+        }
     });
 });
 
@@ -1234,65 +1090,50 @@ app.post("/api/shops/delete", (req, res) => {
    COMPLAINTS
 ========================================================= */
 
-app.post("/api/complaints", (req, res) => {
+app.post("/api/complaints", async (req, res) => {
     if (!req.session.username) {
-        return res.status(401).json({
-            ok: false
-        });
+        return res.status(401).json({ ok: false });
     }
 
     const targetType = String(req.body.target_type || "");
     const targetName = String(req.body.target_name || "");
     const reason = String(req.body.reason || "");
 
-    db.run(
-        `
-        INSERT INTO complaints
-        (target_type,target_name,complainant,reason)
-        VALUES (?,?,?,?)
-        `,
-        [
-            targetType,
-            targetName,
-            req.session.username,
-            reason
-        ],
-        err => {
-            if (err) {
-                return res.status(500).json({
-                    ok: false
-                });
-            }
+    try {
+        await pool.query(
+            `
+            INSERT INTO complaints
+            (target_type, target_name, complainant, reason)
+            VALUES ($1, $2, $3, $4)
+            `,
+            [targetType, targetName, req.session.username, reason]
+        );
 
-            res.json({
-                ok: true
-            });
-        }
-    );
+        res.json({ ok: true });
+    } catch (err) {
+        res.status(500).json({ ok: false });
+    }
 });
 
 app.get("/api/admin/complaints", (req, res) => {
-    isAdmin(req.session.username, allowed => {
+    isAdmin(req.session.username, async allowed => {
         if (!allowed) {
-            return res.status(403).json({
-                ok: false
-            });
+            return res.status(403).json({ ok: false });
         }
 
-        db.all(
-            `
-            SELECT *
-            FROM complaints
-            ORDER BY id DESC
-            `,
-            [],
-            (err, rows) => {
-                res.json({
-                    ok: !err,
-                    complaints: rows || []
-                });
-            }
-        );
+        try {
+            const result = await pool.query(`
+                SELECT *
+                FROM complaints
+                ORDER BY id DESC
+            `);
+            res.json({
+                ok: true,
+                complaints: result.rows || []
+            });
+        } catch (err) {
+            res.json({ ok: false, complaints: [] });
+        }
     });
 });
 
@@ -1828,10 +1669,14 @@ function appendMessage(message) {
 
     const avatar = message.avatarUrl || "https://ui-avatars.com/api/?name=" + encodeURIComponent(message.username);
     let media = "";
-    if (message.mediaUrl && message.mediaType === "image") {
+    if (message.mediaurl && message.mediatype === "image") {
+        media = '<img class="media" src="' + escapeAttr(message.mediaurl) + '">';
+    } else if (message.mediaUrl && message.mediaType === "image") {
         media = '<img class="media" src="' + escapeAttr(message.mediaUrl) + '">';
     }
-    if (message.mediaUrl && message.mediaType === "video") {
+    if (message.mediaurl && message.mediatype === "video") {
+        media = '<video controls src="' + escapeAttr(message.mediaurl) + '"></video>';
+    } else if (message.mediaUrl && message.mediaType === "video") {
         media = '<video controls src="' + escapeAttr(message.mediaUrl) + '"></video>';
     }
 
@@ -1920,8 +1765,8 @@ async function loadExchangers() {
     if (adminBox) adminBox.innerHTML = "";
 
     allExchangers.forEach(item => {
-        let photoHtml = item.photoUrl ? '<img src="' + escapeAttr(item.photoUrl) + '">' : "";
-        let tgHtml = item.telegramUrl ? '<a href="' + escapeAttr(item.telegramUrl) + '" target="_blank">✈️ Telegram</a>' : "";
+        let photoHtml = item.photourl ? '<img src="' + escapeAttr(item.photourl) + '">' : (item.photoUrl ? '<img src="' + escapeAttr(item.photoUrl) + '">' : "");
+        let tgHtml = item.telegramurl ? '<a href="' + escapeAttr(item.telegramurl) + '" target="_blank">✈️ Telegram</a>' : (item.telegramUrl ? '<a href="' + escapeAttr(item.telegramUrl) + '" target="_blank">✈️ Telegram</a>' : "");
 
         box.innerHTML += 
             '<div class="card">' +
@@ -1957,8 +1802,8 @@ async function loadShops() {
     if (adminBox) adminBox.innerHTML = "";
 
     allShops.forEach(item => {
-        let photoHtml = item.photoUrl ? '<img src="' + escapeAttr(item.photoUrl) + '">' : "";
-        let tgHtml = item.telegramUrl ? '<a href="' + escapeAttr(item.telegramUrl) + '" target="_blank">✈️ Telegram</a>' : "";
+        let photoHtml = item.photourl ? '<img src="' + escapeAttr(item.photourl) + '">' : (item.photoUrl ? '<img src="' + escapeAttr(item.photoUrl) + '">' : "");
+        let tgHtml = item.telegramurl ? '<a href="' + escapeAttr(item.telegramurl) + '" target="_blank">✈️ Telegram</a>' : (item.telegramUrl ? '<a href="' + escapeAttr(item.telegramUrl) + '" target="_blank">✈️ Telegram</a>' : "");
 
         box.innerHTML += 
             '<div class="card">' +
@@ -1995,8 +1840,8 @@ function renderMyPersonalRooms() {
             myShopsBox.innerHTML = '<p style="color:#888;">У вас нет привязанных магазинов</p>';
         } else {
             userShops.forEach(item => {
-                let photoHtml = item.photoUrl ? '<img src="' + escapeAttr(item.photoUrl) + '">' : "";
-                let tgHtml = item.telegramUrl ? '<a href="' + escapeAttr(item.telegramUrl) + '" target="_blank">✈️ Telegram</a>' : "";
+                let photoHtml = item.photourl ? '<img src="' + escapeAttr(item.photourl) + '">' : (item.photoUrl ? '<img src="' + escapeAttr(item.photoUrl) + '">' : "");
+                let tgHtml = item.telegramurl ? '<a href="' + escapeAttr(item.telegramurl) + '" target="_blank">✈️ Telegram</a>' : (item.telegramUrl ? '<a href="' + escapeAttr(item.telegramUrl) + '" target="_blank">✈️ Telegram</a>' : "");
                 myShopsBox.innerHTML += 
                     '<div class="card">' +
                         photoHtml +
@@ -2015,8 +1860,8 @@ function renderMyPersonalRooms() {
             myExchBox.innerHTML = '<p style="color:#888;">У вас нет привязанных обменников</p>';
         } else {
             userExch.forEach(item => {
-                let photoHtml = item.photoUrl ? '<img src="' + escapeAttr(item.photoUrl) + '">' : "";
-                let tgHtml = item.telegramUrl ? '<a href="' + escapeAttr(item.telegramUrl) + '" target="_blank">✈️ Telegram</a>' : "";
+                let photoHtml = item.photourl ? '<img src="' + escapeAttr(item.photourl) + '">' : (item.photoUrl ? '<img src="' + escapeAttr(item.photoUrl) + '">' : "");
+                let tgHtml = item.telegramurl ? '<a href="' + escapeAttr(item.telegramurl) + '" target="_blank">✈️ Telegram</a>' : (item.telegramUrl ? '<a href="' + escapeAttr(item.telegramUrl) + '" target="_blank">✈️ Telegram</a>' : "");
                 myExchBox.innerHTML += 
                     '<div class="card">' +
                         photoHtml +
@@ -2041,7 +1886,7 @@ async function loadAdmins() {
         if (currentUser && currentUser.status === "main_admin") {
             avatarEdit = '<br><button class="small-btn" onclick="setAdminAvatar(\\'' + escapeJs(admin.username) + '\\')">🖼 Сменить аватарку</button>';
         }
-        if (admin.status !== "main_admin") {
+        if (admin.username !== "koliaegorov99po-afk" && admin.status !== "main_admin") {
             actions = 
                 '<br><br>' +
                 '<button onclick="editAdmin(\\'' + escapeJs(admin.username) + '\\')">✏️ Изменить</button> ' +
@@ -2428,28 +2273,26 @@ io.on("connection", socket => {
         return;
     }
 
-    getUser(username, (err, user) => {
+    getUser(username, async (err, user) => {
         if (err || !user) {
             socket.disconnect(true);
             return;
         }
 
-        db.all(
-            `
-            SELECT *
-            FROM messages
-            ORDER BY id DESC
-            LIMIT 100
-            `,
-            [],
-            (error, messages) => {
-                if (error) return;
-                messages.reverse();
-                socket.emit("history", messages);
-            }
-        );
+        try {
+            const historyResult = await pool.query(`
+                SELECT *
+                FROM messages
+                ORDER BY id DESC
+                LIMIT 100
+            `);
+            const messages = historyResult.rows.reverse();
+            socket.emit("history", messages);
+        } catch (error) {
+            console.error("Ошибка загрузки истории сообщений:", error);
+        }
 
-        socket.on("chat_message", data => {
+        socket.on("chat_message", async data => {
             const text = String(data.text || "").trim().slice(0, 5000);
             const mediaUrl = String(data.mediaUrl || "").trim().slice(0, 2000);
             let mediaType = String(data.mediaType || "");
@@ -2460,77 +2303,73 @@ io.on("connection", socket => {
 
             if (!text && !mediaUrl) return;
 
-            db.run(
-                `
-                INSERT INTO messages
-                (username,avatarUrl,text,mediaUrl,mediaType,isAd)
-                VALUES (?,?,?,?,?,0)
-                `,
-                [
-                    user.username,
-                    user.avatarUrl || "",
-                    text,
-                    mediaUrl,
-                    mediaType
-                ],
-                function(err) {
-                    if (err) return;
+            try {
+                const insertRes = await pool.query(
+                    `
+                    INSERT INTO messages
+                    (username, avatarUrl, text, mediaUrl, mediaType, isAd)
+                    VALUES ($1, $2, $3, $4, $5, 0)
+                    RETURNING id
+                    `,
+                    [
+                        user.username,
+                        user.avatarUrl || "",
+                        text,
+                        mediaUrl,
+                        mediaType
+                    ]
+                );
 
-                    db.get(
-                        `
-                        SELECT *
-                        FROM messages
-                        WHERE id = ?
-                        `,
-                        [this.lastID],
-                        (getErr, message) => {
-                            if (getErr) return;
-                            io.emit("new_message", message);
-                        }
-                    );
-                }
-            );
+                const messageId = insertRes.rows[0].id;
+                const messageRes = await pool.query("SELECT * FROM messages WHERE id = $1", [messageId]);
+                io.emit("new_message", messageRes.rows[0]);
+            } catch (err) {
+                console.error("Ошибка сохранения сообщения:", err);
+            }
         });
 
-        socket.on("toggle_like", data => {
+        socket.on("toggle_like", async data => {
             const messageId = Number(data.messageId);
             if (!messageId) return;
 
-            db.get(
-                `
-                SELECT id
-                FROM message_likes
-                WHERE messageId = ?
-                AND username = ?
-                `,
-                [messageId, username],
-                (err, existing) => {
-                    if (existing) {
-                        db.run(
-                            `
-                            DELETE FROM message_likes
-                            WHERE messageId = ?
-                            AND username = ?
-                            `,
-                            [messageId, username],
-                            () => { updateLikes(messageId); }
-                        );
-                    } else {
-                        db.run(
-                            `
-                            INSERT OR IGNORE INTO message_likes
-                            (messageId,username)
-                            VALUES (?,?)
-                            `,
-                            [messageId, username],
-                            () => { updateLikes(messageId); }
-                        );
-                    }
+            try {
+                const existingResult = await pool.query(
+                    `
+                    SELECT id
+                    FROM message_likes
+                    WHERE messageId = $1
+                    AND username = $2
+                    `,
+                    [messageId, username]
+                );
+
+                if (existingResult.rows.length > 0) {
+                    await pool.query(
+                        `
+                        DELETE FROM message_likes
+                        WHERE messageId = $1
+                        AND username = $2
+                        `,
+                        [messageId, username]
+                    );
+                } else {
+                    await pool.query(
+                        `
+                        INSERT INTO message_likes
+                        (messageId, username)
+                        VALUES ($1, $2)
+                        ON CONFLICT (messageId, username) DO NOTHING
+                        `,
+                        [messageId, username]
+                    );
                 }
-            );
+                updateLikes(messageId);
+            } catch (err) {
+                console.error("Ошибка переключения лайка:", err);
+            }
         });
 
-        socket.on("pin_message", data => {
+        socket.on("pin_message", async data => {
             if (user.status !== "admin" && user.status !== "main_admin") {
                 return;
             }
@@ -2538,26 +2377,13 @@ io.on("connection", socket => {
             const messageId = Number(data.messageId);
             if (!messageId) return;
 
-            db.run(
-                `
-                UPDATE messages
-                SET isPinned = 0
-                `,
-                [],
-                () => {
-                    db.run(
-                        `
-                        UPDATE messages
-                        SET isPinned = 1
-                        WHERE id = ?
-                        `,
-                        [messageId],
-                        () => {
-                            io.emit("message_pinned", { messageId });
-                        }
-                    );
-                }
-            );
+            try {
+                await pool.query("UPDATE messages SET isPinned = 0");
+                await pool.query("UPDATE messages SET isPinned = 1 WHERE id = $1", [messageId]);
+                io.emit("message_pinned", { messageId });
+            } catch (err) {
+                console.error("Ошибка закрепа сообщения:", err);
+            }
         });
 
         socket.on("disconnect", () => {
@@ -2570,33 +2396,35 @@ io.on("connection", socket => {
    UPDATE LIKES
 ========================================================= */
 
-function updateLikes(messageId) {
-    db.get(
-        `
-        SELECT COUNT(*) AS likes
-        FROM message_likes
-        WHERE messageId = ?
-        `,
-        [messageId],
-        (err, row) => {
-            if (err) error => {};
+async function updateLikes(messageId) {
+    try {
+        const countRes = await pool.query(
+            `
+            SELECT COUNT(*) AS likes
+            FROM message_likes
+            WHERE messageId = $1
+            `,
+            [messageId]
+        );
 
-            db.run(
-                `
-                UPDATE messages
-                SET likes = ?
-                WHERE id = ?
-                `,
-                [row.likes, messageId],
-                () => {
-                    io.emit("message_liked", {
-                        messageId,
-                        likes: row.likes
-                    });
-                }
-            );
-        }
-    );
+        const likesCount = countRes.rows[0] ? Number(countRes.rows[0].likes) : 0;
+
+        await pool.query(
+            `
+            UPDATE messages
+            SET likes = $1
+            WHERE id = $2
+            `,
+            [likesCount, messageId]
+        );
+
+        io.emit("message_liked", {
+            messageId,
+            likes: likesCount
+        });
+    } catch (err) {
+        console.error("Ошибка обновления лайков:", err);
+    }
 }
 
 /* =========================================================
@@ -2607,7 +2435,7 @@ server.listen(PORT, HOST, () => {
     console.log("");
     console.log("====================================");
     console.log("$AKIHABARA_cc.228$");
-    console.log("SERVER STARTED");
+    console.log("SERVER STARTED (POSTGRESQL SUPABASE)");
     console.log("PORT:", PORT);
     console.log("HOST:", HOST);
     console.log("MAIN ADMIN:", MAIN_ADMIN);
