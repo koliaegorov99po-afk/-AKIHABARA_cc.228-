@@ -1,4 +1,6 @@
-Const express = require("express");
+require("dotenv").config();
+
+const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const { Pool } = require("pg");
@@ -233,7 +235,7 @@ app.use(sessionMiddleware);
 io.use((socket, next) => {
     sessionMiddleware(
         socket.request,
-        {},
+        socket.request.res || {},
         next
     );
 });
@@ -1241,10 +1243,6 @@ document.getElementById("username").addEventListener("keydown", e => {
         `);
     }
 
-    /* =====================================================
-       MAIN APPLICATION
-    ===================================================== */
-
     res.send(`
 <!DOCTYPE html>
 <html lang="ru">
@@ -1595,10 +1593,10 @@ async function loadUser() {
     document.getElementById("profileUsername").textContent = "@" + currentUser.username;
     document.getElementById("profileStatus").textContent = currentUser.status;
     document.getElementById("profileInvites").textContent = currentUser.invites || 0;
-    const avatar = currentUser.avatarUrl || "https://ui-avatars.com/api/?name=" + encodeURIComponent(currentUser.username);
+    const avatar = currentUser.avatarurl || currentUser.avatarUrl || "https://ui-avatars.com/api/?name=" + encodeURIComponent(currentUser.username);
     document.getElementById("profileAvatar").src = avatar;
-    document.getElementById("avatarUrl").value = currentUser.avatarUrl || "";
-    const link = location.origin + "/?ref=" + encodeURIComponent(currentUser.referralCode || currentUser.username);
+    document.getElementById("avatarUrl").value = currentUser.avatarurl || currentUser.avatarUrl || "";
+    const link = location.origin + "/?ref=" + encodeURIComponent(currentUser.referralcode || currentUser.referralCode || currentUser.username);
     document.getElementById("refLink").value = link;
     if (currentUser.status !== "main_admin") {
         document.getElementById("adminsSection").style.display = "none";
@@ -1667,17 +1665,15 @@ function appendMessage(message) {
     const div = document.createElement("div");
     div.className = "message";
 
-    const avatar = message.avatarUrl || "https://ui-avatars.com/api/?name=" + encodeURIComponent(message.username);
+    const avatar = message.avatarurl || message.avatarUrl || "https://ui-avatars.com/api/?name=" + encodeURIComponent(message.username);
     let media = "";
-    if (message.mediaurl && message.mediatype === "image") {
-        media = '<img class="media" src="' + escapeAttr(message.mediaurl) + '">';
-    } else if (message.mediaUrl && message.mediaType === "image") {
-        media = '<img class="media" src="' + escapeAttr(message.mediaUrl) + '">';
-    }
-    if (message.mediaurl && message.mediatype === "video") {
-        media = '<video controls src="' + escapeAttr(message.mediaurl) + '"></video>';
-    } else if (message.mediaUrl && message.mediaType === "video") {
-        media = '<video controls src="' + escapeAttr(message.mediaUrl) + '"></video>';
+    const mUrl = message.mediaurl || message.mediaUrl;
+    const mType = message.mediatype || message.mediaType;
+
+    if (mUrl && mType === "image") {
+        media = '<img class="media" src="' + escapeAttr(mUrl) + '">';
+    } else if (mUrl && mType === "video") {
+        media = '<video controls src="' + escapeAttr(mUrl) + '"></video>';
     }
 
     const text = highlightMentions(escapeHtml(message.text || ""));
@@ -1765,8 +1761,10 @@ async function loadExchangers() {
     if (adminBox) adminBox.innerHTML = "";
 
     allExchangers.forEach(item => {
-        let photoHtml = item.photourl ? '<img src="' + escapeAttr(item.photourl) + '">' : (item.photoUrl ? '<img src="' + escapeAttr(item.photoUrl) + '">' : "");
-        let tgHtml = item.telegramurl ? '<a href="' + escapeAttr(item.telegramurl) + '" target="_blank">✈️ Telegram</a>' : (item.telegramUrl ? '<a href="' + escapeAttr(item.telegramUrl) + '" target="_blank">✈️ Telegram</a>' : "");
+        let photoUrlVal = item.photourl || item.photoUrl || "";
+        let telegramUrlVal = item.telegramurl || item.telegramUrl || "";
+        let photoHtml = photoUrlVal ? '<img src="' + escapeAttr(photoUrlVal) + '">' : "";
+        let tgHtml = telegramUrlVal ? '<a href="' + escapeAttr(telegramUrlVal) + '" target="_blank">✈️ Telegram</a>' : "";
 
         box.innerHTML += 
             '<div class="card">' +
@@ -1802,8 +1800,10 @@ async function loadShops() {
     if (adminBox) adminBox.innerHTML = "";
 
     allShops.forEach(item => {
-        let photoHtml = item.photourl ? '<img src="' + escapeAttr(item.photourl) + '">' : (item.photoUrl ? '<img src="' + escapeAttr(item.photoUrl) + '">' : "");
-        let tgHtml = item.telegramurl ? '<a href="' + escapeAttr(item.telegramurl) + '" target="_blank">✈️ Telegram</a>' : (item.telegramUrl ? '<a href="' + escapeAttr(item.telegramUrl) + '" target="_blank">✈️ Telegram</a>' : "");
+        let photoUrlVal = item.photourl || item.photoUrl || "";
+        let telegramUrlVal = item.telegramurl || item.telegramUrl || "";
+        let photoHtml = photoUrlVal ? '<img src="' + escapeAttr(photoUrlVal) + '">' : "";
+        let tgHtml = telegramUrlVal ? '<a href="' + escapeAttr(telegramUrlVal) + '" target="_blank">✈️ Telegram</a>' : "";
 
         box.innerHTML += 
             '<div class="card">' +
@@ -1840,8 +1840,10 @@ function renderMyPersonalRooms() {
             myShopsBox.innerHTML = '<p style="color:#888;">У вас нет привязанных магазинов</p>';
         } else {
             userShops.forEach(item => {
-                let photoHtml = item.photourl ? '<img src="' + escapeAttr(item.photourl) + '">' : (item.photoUrl ? '<img src="' + escapeAttr(item.photoUrl) + '">' : "");
-                let tgHtml = item.telegramurl ? '<a href="' + escapeAttr(item.telegramurl) + '" target="_blank">✈️ Telegram</a>' : (item.telegramUrl ? '<a href="' + escapeAttr(item.telegramUrl) + '" target="_blank">✈️ Telegram</a>' : "");
+                let photoUrlVal = item.photourl || item.photoUrl || "";
+                let telegramUrlVal = item.telegramurl || item.telegramUrl || "";
+                let photoHtml = photoUrlVal ? '<img src="' + escapeAttr(photoUrlVal) + '">' : "";
+                let tgHtml = telegramUrlVal ? '<a href="' + escapeAttr(telegramUrlVal) + '" target="_blank">✈️ Telegram</a>' : "";
                 myShopsBox.innerHTML += 
                     '<div class="card">' +
                         photoHtml +
@@ -1860,8 +1862,10 @@ function renderMyPersonalRooms() {
             myExchBox.innerHTML = '<p style="color:#888;">У вас нет привязанных обменников</p>';
         } else {
             userExch.forEach(item => {
-                let photoHtml = item.photourl ? '<img src="' + escapeAttr(item.photourl) + '">' : (item.photoUrl ? '<img src="' + escapeAttr(item.photoUrl) + '">' : "");
-                let tgHtml = item.telegramurl ? '<a href="' + escapeAttr(item.telegramurl) + '" target="_blank">✈️ Telegram</a>' : (item.telegramUrl ? '<a href="' + escapeAttr(item.telegramUrl) + '" target="_blank">✈️ Telegram</a>' : "");
+                let photoUrlVal = item.photourl || item.photoUrl || "";
+                let telegramUrlVal = item.telegramurl || item.telegramUrl || "";
+                let photoHtml = photoUrlVal ? '<img src="' + escapeAttr(photoUrlVal) + '">' : "";
+                let tgHtml = telegramUrlVal ? '<a href="' + escapeAttr(telegramUrlVal) + '" target="_blank">✈️ Telegram</a>' : "";
                 myExchBox.innerHTML += 
                     '<div class="card">' +
                         photoHtml +
