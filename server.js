@@ -47,6 +47,7 @@ pool.connect((err, client, release) => {
 
 // Инициализация таблиц для PostgreSQL
 async function initDatabase() {
+    console.log("ПРОВЕРКА DATABASE_URL В КОДЕ:", process.env.DATABASE_URL);
     try {
         await pool.query(`
             CREATE TABLE IF NOT EXISTS users (
