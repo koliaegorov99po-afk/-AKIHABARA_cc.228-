@@ -1,4 +1,4 @@
-const express = require("express");
+Const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const { Pool } = require("pg");
@@ -28,19 +28,7 @@ if (!fs.existsSync(publicDir)) {
    POSTGRESQL DATABASE (SUPABASE)
 ========================================================= */
 
-const connectionString = process.env.DATABASE_URL;const pool = new Pool({
-    connectionString,
-    ssl: {
-        rejectUnauthorized: false
-    }
-});
-
-const pool = new Pool({
-    connectionString,
-    ssl: {
-        rejectUnauthorized: false
-    }
-});
+const connectionString = process.env.DATABASE_URL;
 
 const pool = new Pool({
     connectionString,
