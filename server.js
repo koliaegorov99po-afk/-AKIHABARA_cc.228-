@@ -28,8 +28,19 @@ if (!fs.existsSync(publicDir)) {
    POSTGRESQL DATABASE (SUPABASE)
 ========================================================= */
 
-const connectionString = process.env.DATABASE_URL || "postgresql://postgres.oxfepjlzfolzlmlan:77526052koliaK%401@aws-0-eu-central-1.pooler.supabase.com:6543/postgres
-";
+const connectionString = process.env.DATABASE_URL;const pool = new Pool({
+    connectionString,
+    ssl: {
+        rejectUnauthorized: false
+    }
+});
+
+const pool = new Pool({
+    connectionString,
+    ssl: {
+        rejectUnauthorized: false
+    }
+});
 
 const pool = new Pool({
     connectionString,
